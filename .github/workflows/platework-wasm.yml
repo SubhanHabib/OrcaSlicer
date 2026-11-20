@@ -2,7 +2,6 @@ name: Build Platework WebAssembly
 on:
   push:
     branches: [platework]
-    paths: ['src/**', 'deps*/**', 'cmake/**', 'ports/wasm/**', 'CMakeLists.txt', '.github/workflows/platework-wasm.yml']
   workflow_dispatch:
 permissions:
   contents: read

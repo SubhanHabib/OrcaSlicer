@@ -9,6 +9,23 @@ target_link_libraries(slicer PRIVATE orca_web_bridge)
 set(ORCA_WEB_WASM_OUTPUT_NAME "slicer-mt")
 
 # ── Emscripten link flags ────────────────────────────────────────────────────
+# Ship the same printer metadata and nozzle data as the desktop release.
+set(_profiles "${ORCA_SRC}/../resources/profiles")
+file(READ "${_profiles}/BBL.json" _manifest)
+string(JSON _count LENGTH "${_manifest}" machine_model_list)
+math(EXPR _last "${_count} - 1")
+set(_ids "{}")
+foreach(_i RANGE 0 ${_last})
+  string(JSON _path GET "${_manifest}" machine_model_list ${_i} sub_path)
+  file(READ "${_profiles}/BBL/${_path}" _model)
+  string(JSON _name GET "${_model}" name)
+  string(JSON _id GET "${_model}" model_id)
+  string(JSON _ids SET "${_ids}" "${_name}" "\"${_id}\"")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/bambu-model-ids.json" "${_ids}")
+target_link_options(slicer PRIVATE
+  "SHELL:--embed-file ${ORCA_SRC}/../resources/info@/info"
+  "SHELL:--embed-file ${CMAKE_CURRENT_BINARY_DIR}/bambu-model-ids.json@/info/bambu-model-ids.json")
 target_link_options(slicer PRIVATE
   -O3
   # Keeps a wasm name section (function names) for readable stack traces

@@ -16,7 +16,8 @@ This repository embeds a WebAssembly build of
 
 - License: GNU Affero General Public License v3.0 (AGPL-3.0)
 - Copyright: SoftFever and OrcaSlicer contributors
-- Source version: https://github.com/SoftFever/OrcaSlicer/tree/v2.4.2
+- Source: https://github.com/SubhanHabib/OrcaSlicer/tree/platework
+- Browser bindings adapted from https://github.com/Hiosdra/OrcaWasm/tree/60a09e04f1990be39c8f6f35dffef1a2c9e224c4
 - Compatibility changes: [`patches/apply.py`](patches/apply.py)
 
 Per AGPL-3.0 §13, the complete corresponding source for this modified build,

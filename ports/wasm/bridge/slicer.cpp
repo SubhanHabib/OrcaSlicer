@@ -37,6 +37,8 @@
  */
 
 #include "oneslicer_api.h"
+#include "libslic3r_version.h"
+#include <fstream>
 
 #include <algorithm>
 #include <array>
@@ -2247,7 +2249,8 @@ static oneslicer_status_t slice_project_model(
     Slic3r::Model& model,
     ActiveSliceGuard& operation,
     uint8_t** out_gcode,
-    uint32_t* out_len
+    uint32_t* out_len,
+    nlohmann::json& validation_warnings
 ) {
     try {
         std::string footprint_error;
@@ -2265,17 +2268,19 @@ static oneslicer_status_t slice_project_model(
         Slic3r::Print print;
         operation.attach(print);
         ActivePrintGuard print_guard(operation);
+        set_is_bbl_printer(print, session.config);
         print.apply(model, session.config);
         zero_plate_origin(print);
-        set_is_bbl_printer(print, session.config);
         if (session.remove_mixed_temp_restriction)
             print.set_check_multi_filaments_compatibility(false);
         if (session.adaptive_layer_height)
             apply_adaptive_layer_height(print, session.adaptive_layer_height_quality);
         attach_progress_callback(print, session);
 
-        Slic3r::StringObjectException warning;
-        Slic3r::StringObjectException validation_error = print.validate(&warning);
+        std::vector<Slic3r::StringObjectException> warnings;
+        Slic3r::StringObjectException validation_error = print.validate(&warnings);
+        for (const auto& warning : warnings)
+            validation_warnings.push_back({{"code", "validation"}, {"message", warning.string}});
         if (!validation_error.string.empty()) {
             record_error(session, validation_error.string);
             return ONESLICER_ERR_VALIDATION;
@@ -2858,27 +2863,6 @@ void oneslicer_session_destroy(oneslicer_session_t session_ptr) {
  * All values must be string-encoded exactly as OrcaSlicer stores them
  * (e.g. "0.2", "15%", "1" for true).  Unknown keys are silently ignored.
  */
-// Print::get_hrc_by_nozzle_type() (Print.cpp) reads "info/nozzle_info.json"
-// relative to Slic3r::resources_dir(), which our bridge never sets (empty
-// string) since we ship no /resources tree. The parse always fails there,
-// which is handled — but the BOOST_LOG_TRIVIAL(error) call on that failure
-// path traps with "memory access out of bounds" inside boost::log's
-// no-thread Boost.Log core on every single slice, even for trivial models.
-// Pre-seed the file in MEMFS so the parse succeeds and that log call (and
-// whatever makes it crash) is never reached, rather than patching boost::log.
-static void ensure_nozzle_info_json() {
-    static bool written = false;
-    if (written) return;
-    ::mkdir("info", 0755); // ignore EEXIST
-    if (FILE* f = std::fopen("info/nozzle_info.json", "wb")) {
-        static const char kJson[] =
-            R"({"nozzle_hrc":{"hardened_steel":55,"stainless_steel":20,"tungsten_carbide":85,"brass":2,"undefine":0}})";
-        std::fwrite(kJson, 1, sizeof(kJson) - 1, f);
-        std::fclose(f);
-    }
-    written = true;
-}
-
 EMSCRIPTEN_KEEPALIVE
 oneslicer_status_t oneslicer_init(oneslicer_session_t session_ptr, const uint8_t* config_data, uint32_t config_len) {
     OrcSession* session = as_session(session_ptr);
@@ -2888,7 +2872,6 @@ oneslicer_status_t oneslicer_init(oneslicer_session_t session_ptr, const uint8_t
     session->last_statistics_json.clear();
     session->has_last_statistics = false;
     reset_project(*session);
-    ensure_nozzle_info_json();
     if (!config_data || config_len == 0) {
         record_error(*session, "config data is empty");
         return ONESLICER_ERR_CONFIG;
@@ -3041,7 +3024,6 @@ oneslicer_status_t oneslicer_apply_profile(
         if (session->initialized) {
             candidate_config = session->config;
         } else {
-            ensure_nozzle_info_json();
             candidate_config.apply(g_defaults);
             candidate_config.set_deserialize_strict("use_relative_e_distances", "0");
         }
@@ -3304,8 +3286,8 @@ oneslicer_status_t oneslicer_get_capabilities(uint8_t** out_json, uint32_t* out_
     constexpr const char* requires_sab = "true";
     const std::string json = std::string(R"({
   "api":{"name":"one-slicer-api","version":"0.7.0"},
-  "engine":{"family":"OrcaSlicer","version":"2.4.2"},
-  "runtime":{"threadingModel":")") + threading_model + R"(","supportedHosts":["web","worker","node"],"requiresSharedArrayBuffer":)" + requires_sab + R"(,"requiresCrossOriginIsolated":)" + requires_sab + R"(,"cancellationMode":"cooperative"},
+  "engine":{"family":"OrcaSlicer","version":")") + SoftFever_VERSION + R"("},
+  "runtime":{"threadingModel":")" + threading_model + R"(","supportedHosts":["web","worker","node"],"requiresSharedArrayBuffer":)" + requires_sab + R"(,"requiresCrossOriginIsolated":)" + requires_sab + R"(,"cancellationMode":"cooperative"},
   "configuration":{"initFormats":["orca.native-json"],"fullProfileFormats":["project.3mf"],"profileApplyFormats":["orca.profile-json","orca.native-json"]},
   "project":{"meshFormats":["stl"],"faceAttributeSemantics":{"triangle":[],"brepFace":[]},"nativeProjectFormats":["project.3mf"],"preservationPolicies":["require","best-effort","portable"],"sliceArtifactExport":"supported"},
   "features":{"core.session":"supported","core.configuration":"supported","config.fullProfile":"supported","config.profileApply":"supported","project.manifest":"supported","project.modifierVolumes":"supported","project.modifierVolumes.nativeProject":"supported","project.meshFormat.step":"unsupported","project.preview.stepFaces":"unsupported","project.faceAttributes":"unsupported","project.prepare":"supported","project.slice":"supported","project.slice.multiPlate":"supported","project.slice.assets":"supported","project.export":"supported","project.export.sliceArtifacts":"supported","project.export.preservation":"supported","format.objToStl":"supported","format.stepToStl":"supported","format.threeMfToStl":"supported","runtime.capabilities":"supported","runtime.progress":"supported","runtime.cancellation":"supported","runtime.errors":"supported"}
@@ -3744,7 +3726,7 @@ oneslicer_status_t oneslicer_project_slice(
             uint8_t* gcode_data = nullptr;
             uint32_t gcode_len = 0;
             const auto slice_status = slice_project_model(
-                *session, model, operation, &gcode_data, &gcode_len
+                *session, model, operation, &gcode_data, &gcode_len, plate_result["warnings"]
             );
             if (slice_status != ONESLICER_OK) {
                 std::free(gcode_data);
@@ -3996,6 +3978,12 @@ static oneslicer_status_t write_project_slice_artifacts_3mf(
         }
         auto plate = std::make_unique<Slic3r::PlateData>(static_cast<int>(plate_index), members, false);
 
+        static const nlohmann::json model_ids = [] {
+            std::ifstream file("/info/bambu-model-ids.json");
+            return nlohmann::json::parse(file);
+        }();
+        plate->printer_model_id = model_ids.value(config.opt_string("printer_model"), std::string());
+        plate->nozzle_diameters = config.option("nozzle_diameter")->serialize();
         const auto gcode = gcode_by_plate.find(plate_id);
         if (gcode != gcode_by_plate.end()) {
             const std::string path = "/tmp/ow-project-gcode-" + std::to_string(session.id)
