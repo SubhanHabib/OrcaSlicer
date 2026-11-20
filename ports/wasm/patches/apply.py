@@ -205,10 +205,23 @@ patch("src/libslic3r/CMakeLists.txt", [
     # the only Find modules that can ever resolve here. (OpenVDB's genexpr
     # guard below is kept — it interacts with the Layer 2 override injection
     # in a way these two don't.)
-    # Wrap OpenVDB link
+    # The browser shim deliberately provides an empty OpenVDB target.
+    # Exclude the native implementation and its link on the staged WASM tree.
     (
-        r'(OpenVDB::openvdb)',
-        r'$<$<NOT:$<BOOL:${SLIC3R_WASM}>>:OpenVDB::openvdb>',
+        r'if \(TARGET OpenVDB::openvdb\)',
+        r'if (NOT SLIC3R_WASM AND TARGET OpenVDB::openvdb)',
+        0,
+    ),
+    (
+        r'set\(CMAKE_POLICY_DEFAULT_CMP0167 NEW\)',
+        r'set(CMAKE_POLICY_DEFAULT_CMP0167 OLD)',
+        0,
+    ),
+    # Upstream spells the dependency Draco. Select the browser shim on
+    # case-sensitive builders, where Finddraco and FindDraco are distinct.
+    (
+        r'find_package\(Draco REQUIRED\)',
+        r'find_package(draco REQUIRED)',
         0,
     ),
     # JPEG: embuilder pre-builds libjpeg into the Emscripten sysroot, so

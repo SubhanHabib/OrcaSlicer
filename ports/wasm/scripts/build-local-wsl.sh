@@ -42,6 +42,13 @@ echo "[build-local-wsl] repo root: $(pwd)"
 # checkout's exact revision. Native and desktop builds keep their own sources.
 (
 revision=$(git rev-parse HEAD)
+if [[ -f orca/.platework-wasm-prepared ]] && [[ "$(git -C orca rev-parse HEAD)" != "$revision" ]]; then
+    git -C orca fetch --no-tags "$(git rev-parse --show-toplevel)" "$revision"
+    # Only this generated checkout carries the marker. Restore the upstream
+    # files before applying the current revision's compatibility changes.
+    git -C orca checkout --force --detach "$revision"
+    rm orca/.platework-wasm-prepared
+fi
 if [[ ! -d orca ]]; then
     git clone --local --no-checkout "$(git rev-parse --show-toplevel)" orca
     git -C orca checkout --detach "$revision"
