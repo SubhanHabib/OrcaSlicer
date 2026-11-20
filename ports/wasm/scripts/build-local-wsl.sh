@@ -42,22 +42,22 @@ echo "[build-local-wsl] repo root: $(pwd)"
 # checkout's exact revision. Native and desktop builds keep their own sources.
 (
 revision=$(git rev-parse HEAD)
-if [[ -f orca/.platework-wasm-prepared ]] && [[ "$(git -C orca rev-parse HEAD)" != "$revision" ]]; then
-    git -C orca fetch --no-tags "$(git rev-parse --show-toplevel)" "$revision"
-    # Only this generated checkout carries the marker. Restore the upstream
-    # files before applying the current revision's compatibility changes.
-    git -C orca checkout --force --detach "$revision"
-    rm orca/.platework-wasm-prepared
+if [[ -f orca/.platework-wasm-prepared ]] && [[ "$(cat orca/.platework-wasm-prepared)" == "$revision" ]]; then
+    exit 0
 fi
-if [[ ! -d orca ]]; then
-    git clone --local --no-checkout "$(git rev-parse --show-toplevel)" orca
-    git -C orca checkout --detach "$revision"
+if [[ -d orca && ! -f orca/.platework-wasm-prepared ]]; then
+    echo "Expected a generated WASM source directory at $PWD/orca." >&2
+    exit 1
 fi
-test "$(git -C orca rev-parse HEAD)" = "$revision"
-if [[ ! -f orca/.platework-wasm-prepared ]]; then
-    python3 patches/apply.py
-    touch orca/.platework-wasm-prepared
-fi
+scratch=$(mktemp -d "$PWD/.prepare-XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/source"
+# archive needs only the pinned tree, including on a shallow/partial clone.
+git -C "$(git rev-parse --show-toplevel)" archive "$revision" | tar -xf - -C "$scratch/source"
+python3 patches/apply.py --source "$scratch/source"
+echo "$revision" > "$scratch/source/.platework-wasm-prepared"
+if [[ -d orca ]]; then mv orca "$scratch/previous"; fi
+mv "$scratch/source" orca
 )
 
 # ══════════════════════════════════════════════════════════
@@ -68,15 +68,9 @@ source "$EMSDK/emsdk_env.sh"
 BOOST_VERSION="1.83.0"
 BOOST_UNDERSCORE="${BOOST_VERSION//./_}"
 INSTALL="$(pwd)/deps-install"
-# _v3 suffix: manually bumped, not tied to BOOST_VERSION — the
-# BOOST_LOG_NO_THREADS fix above changed Boost's build *flags*,
-# not its pinned version, so BOOST_VERSION alone wouldn't
-# invalidate a stale cached build. Restore-keys below prefix-match
-# regardless of this suffix (see "Restore dep cache"'s own
-# comment on why a version bump alone isn't sufficient), so
-# without this the job could restore its OLD, wrongly-built
-# libboost_log.a from cache and skip rebuilding it entirely.
-STAMP="${INSTALL}/.boost_built_mt_native_eh_v3"
+# Orca 2.5 uses threaded file and console log sinks. Build Boost.Log with
+# the same pthread ABI as the core and the public C++ binding.
+STAMP="${INSTALL}/.boost_built_mt_native_eh_v4"
 mkdir -p "${INSTALL}"
 [[ -f "${STAMP}" ]] && echo "[boost] stamp exists — skip" && exit 0
 
@@ -96,9 +90,7 @@ printf "using clang : emscripten : em++ :\n<archiver>emar\n<ranlib>emranlib ;\n"
 echo "[boost] building with b2 (emscripten, static, threading=${BOOST_THREADING})…"
 B2_DEFINES=(
   "define=BOOST_LOG_WITHOUT_SYSLOG=1"
-  # Always on — see the step comment above for why this must match
-  # libslic3r's own (unconditional, upstream) compile flags.
-  "define=BOOST_LOG_NO_THREADS=1"
+  "define=BOOST_HAS_PTHREADS=1"
 )
 B2_EXTRA_CXXFLAGS="cxxflags=-fwasm-exceptions -pthread"
 
@@ -523,7 +515,7 @@ emcmake cmake \
   -DCGAL_DIR="${DEP_INSTALL}/lib/cmake/CGAL" \
   -DNLOPT_LIBRARY="${DEP_INSTALL}/lib/libnlopt.a" \
   -DNLOPT_INCLUDE_DIR="${DEP_INSTALL}/include" \
-  "-DCMAKE_CXX_FLAGS=-I${COMMON_SHIM_DIR} -DBOOST_HAS_PTHREADS=1 -DSLIC3R_WASM=1 -DSLIC3R_NO_OPENVDB=1 ${EXTRA_CXX_FLAGS}" \
+  "-DCMAKE_CXX_FLAGS=-I${COMMON_SHIM_DIR} -DBOOST_HAS_PTHREADS=1 -DSLIC3R_WASM=1 -DSLIC3R_NO_OPENVDB=1 -Wno-error=tautological-constant-out-of-range-compare ${EXTRA_CXX_FLAGS}" \
   "-DCMAKE_C_FLAGS=-I${COMMON_SHIM_DIR} ${EXTRA_C_FLAGS}"
 
 )

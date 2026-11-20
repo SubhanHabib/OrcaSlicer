@@ -37,13 +37,14 @@ on:
 jobs:
   core:
     name: iOS core (${{ matrix.slice }})
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         slice: [device, simulator]
     env:
+      IOS_SIMULATOR_ARCH: arm64
       DEPS_DIR: deps/build/ios-${{ matrix.slice }}
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -196,7 +197,7 @@ jobs:
   xcframework:
     name: OrcaCore.xcframework
     needs: core
-    runs-on: macos-26
+    runs-on: macos-26-intel
     steps:
       - name: Download slices
         uses: actions/download-artifact@v7

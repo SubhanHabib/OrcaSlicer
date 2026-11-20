@@ -8,7 +8,7 @@ mkdir -p "$sources"
 common=(-G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$install_dir"
     -DBUILD_SHARED_LIBS=OFF "-DCMAKE_CXX_FLAGS=$EXTRA_CXX_FLAGS" "-DCMAKE_C_FLAGS=$EXTRA_C_FLAGS")
 
-if [[ ! -f "$install_dir/.opencv-4.14.0" ]]; then
+if [[ ! -f "$install_dir/.opencv-4.14.0-image-codecs" ]]; then
     archive="$sources/opencv-4.14.0.tar.gz"
     [[ -f "$archive" ]] || curl -fsSL --retry 3 https://github.com/opencv/opencv/archive/refs/tags/4.14.0.tar.gz -o "$archive"
     echo "ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e  $archive" | shasum -a 256 -c -
@@ -16,12 +16,12 @@ if [[ ! -f "$install_dir/.opencv-4.14.0" ]]; then
     emcmake cmake -S "$sources/opencv-4.14.0" -B "$sources/opencv-build" "${common[@]}" \
         -DBUILD_LIST=core,imgproc,imgcodecs -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
         -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF -DBUILD_opencv_js=OFF \
-        -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_ADE=OFF \
+        -DWITH_PROTOBUF=OFF -DWITH_FLATBUFFERS=OFF -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_ADE=OFF \
         -DWITH_WEBP=OFF -DWITH_TIFF=OFF -DWITH_OPENJPEG=OFF -DWITH_OPENEXR=OFF \
         -DWITH_JASPER=OFF -DWITH_AVIF=OFF -DWITH_JPEG=ON -DWITH_PNG=ON \
         -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_ZLIB=ON -DCV_ENABLE_INTRINSICS=OFF
     cmake --build "$sources/opencv-build" --target install -j "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
-    touch "$install_dir/.opencv-4.14.0"
+    touch "$install_dir/.opencv-4.14.0-image-codecs"
 fi
 
 if [[ ! -f "$install_dir/.draco-1.5.7" ]]; then

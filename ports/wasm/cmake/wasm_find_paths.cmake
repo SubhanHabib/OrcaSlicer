@@ -19,12 +19,9 @@ endif()
 # symbols are visible to every translation unit, including PCH and any
 # file that includes OCCT-gated headers via the Model.hpp include chain.
 add_compile_definitions(
+    # Use CGAL's nextafter-based conservative intervals on fixed-rounding WASM.
+    CGAL_ALWAYS_ROUND_TO_NEAREST
     SLIC3R_WASM=1
     SLIC3R_NO_OCCT=1
     SLIC3R_NO_OPENVDB=1
-    # OrcaSlicer's Boost.Log ABI uses BOOST_LOG_NO_THREADS=1 even in the
-    # pthread-enabled engine. The define selects its v2s_st symbols; without
-    # it, consumers reference v2s_mt_posix and wasm-ld reports undefined
-    # boost::log symbols at link time.
-    BOOST_LOG_NO_THREADS=1
 )

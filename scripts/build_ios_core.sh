@@ -86,7 +86,7 @@ if [ "1" == "$PLUGINS" ]; then
     CORE_PLUGIN_FLAGS="-DORCA_MOBILE_PLUGINS=ON"
 fi
 
-HOST_ARCH="$(uname -m)"
+SIMULATOR_ARCH="${IOS_SIMULATOR_ARCH:-$(uname -m)}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPS_DIR="$PROJECT_DIR/deps"
 # Keep host package managers out of every find_package, as the macOS build does.
@@ -109,7 +109,7 @@ slice_settings() {
             ;;
         simulator )
             SDK="iphonesimulator"
-            ARCH="$HOST_ARCH"
+            ARCH="$SIMULATOR_ARCH"
             ;;
     esac
     DEPS_BUILD_DIR="$DEPS_DIR/build/ios-$1"

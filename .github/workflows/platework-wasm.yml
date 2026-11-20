@@ -24,8 +24,17 @@ jobs:
       - name: Identify the base library recipes
         id: base
         run: |
-          digest=$(sed '/^if .*== --base-deps /,$d' ports/wasm/scripts/build-local-wsl.sh | sha256sum | cut -d' ' -f1)
+          cd ports/wasm
+          digest=$({ sed -n '1,/^# Apply the WASM-only/{/^# Apply the WASM-only/!p;}' scripts/build-local-wsl.sh
+            sed -n '/^# Build WASM deps — Boost/,/^if .*== --base-deps /{/^if .*== --base-deps /!p;}' scripts/build-local-wsl.sh
+            cat patches/occt/apply-wasm-eh.py patches/onetbb/wasm-exceptions.cmake scripts/prepare-emscripten-eh.py
+          } | sha256sum | cut -d' ' -f1)
           echo "key=wasm-base-3.1.74-$digest" >> "$GITHUB_OUTPUT"
+          # Reuse the first dependency cache for this migration. The new Boost
+          # stamp rebuilds its threaded ABI while the other recipes are identical.
+          if [[ "$digest" == 0a43c7a7376d92ea0da8dece6328515a6420bbd4ea00663d4175362497ec0f2c ]]; then
+            echo "previous=wasm-base-3.1.74-4982b18d9f946a30b738c1a532d6b24a8bdd30010b90dc1ad1e75ba994b993ac" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/cache/restore@v4
         id: restored
         with:
@@ -33,6 +42,7 @@ jobs:
             ports/wasm/deps-install
             ports/wasm/build-wasm/emscripten-cache-mt
           key: ${{ steps.base.outputs.key }}
+          restore-keys: ${{ steps.base.outputs.previous }}
       - name: Build base libraries
         run: ports/wasm/scripts/build-local-wsl.sh --base-deps
       - uses: actions/cache/save@v4
@@ -47,6 +57,17 @@ jobs:
           path: ~/.cache/ccache
           key: wasm-object-${{ github.sha }}
           restore-keys: wasm-object-
+      - name: Build the browser SDK
+        run: ports/wasm/scripts/build-local-wsl.sh --deps
+      - name: Package the cross-compiled SDK
+        working-directory: ports/wasm
+        run: tar -czf "$RUNNER_TEMP/browser-sdk.tar.gz" deps-install build-wasm/emscripten-cache-mt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platework-wasm-sdk
+          path: ${{ runner.temp }}/browser-sdk.tar.gz
+          retention-days: 3
+          compression-level: 0
       - name: Build and exercise the browser binding
         run: ports/wasm/scripts/build-local-wsl.sh
       - name: Test the browser API contract

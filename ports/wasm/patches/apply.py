@@ -44,7 +44,9 @@ OVERRIDES = Path(__file__).resolve().parent.parent / "overrides"
 # DRY_RUN is correct for every call that follows.
 _parser = argparse.ArgumentParser()
 _parser.add_argument("--check", action="store_true")
+_parser.add_argument("--source", type=Path, default=ORCA)
 _cli_args = _parser.parse_args()
+ORCA = _cli_args.source
 DRY_RUN = _cli_args.check
 
 
@@ -288,7 +290,6 @@ if(SLIC3R_WASM AND DEFINED ORCA_WEB_OVERRIDES_DIR)
   # Files that may be reorganised in future OrcaSlicer versions
   set(_wasm_maybe_stubs
     "${CMAKE_CURRENT_SOURCE_DIR}/SLA/Hollowing.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Shape/TextShape.cpp"
   )
   foreach(_f IN LISTS _wasm_maybe_stubs)
     if(EXISTS "${_f}")
@@ -301,7 +302,6 @@ if(SLIC3R_WASM AND DEFINED ORCA_WEB_OVERRIDES_DIR)
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/Format/svg.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/OpenVDBUtils.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/SLA/Hollowing.cpp"
-    "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/Shape/TextShape.cpp"
   )
 
 endif()
@@ -423,25 +423,6 @@ if _thumb_cpp.exists():
         print("  OK (no change): src/libslic3r/GCode/Thumbnails.cpp (jpeg patch)")
 
 # =============================================================================
-# 7. utils.cpp — Boost.Log ABI compatibility
-#    The engine uses pthreads, while Boost.Log is built with
-#    BOOST_LOG_NO_THREADS, so the MT sink type and
-#    current_thread_id attribute don't exist.
-# =============================================================================
-patch("src/libslic3r/utils.cpp", [
-    (
-        r'boost::log::sinks::synchronous_sink<boost::log::sinks::text_file_backend>',
-        r'boost::log::sinks::unlocked_sink<boost::log::sinks::text_file_backend>',
-        0,
-    ),
-    (
-        r'<<\s*"\[Thread\s*"\s*<<\s*expr::attr<attrs::current_thread_id::value_type>\("ThreadID"\)\s*<<\s*"\]"',
-        r'',
-        0,
-    ),
-])
-
-# =============================================================================
 # 8. Arachne/SkeletalTrapezoidation.cpp — guard a known degenerate case
 #    getOrCreateBeading() has a comment acknowledging "This bug is due to too
 #    small central edges": when a node has no incident edges to measure a
@@ -484,7 +465,33 @@ patch("src/libslic3r/Arachne/SkeletalTrapezoidation.cpp", [
 #     than" any positive check_length, so returning true early is both safe
 #     and the semantically correct answer, not just a guard.
 # =============================================================================
+# The WASM target has fixed round-to-nearest arithmetic. The Voronoi sweep
+# needs segment traits only. Supply the same traits explicitly so CGAL does
+# not instantiate unused algebraic curve support requiring a hardware FPU.
+patch("src/libslic3r/Geometry/VoronoiUtilsCgal.cpp", [
+    (
+        r'(?<!struct Default_arr_traits; }\n)#include <CGAL/Surface_sweep_2_algorithms.h>',
+        '#define CGAL_SURFACE_SWEEP_2_DEFAULT_ARR_TRAITS_H\n'
+        'namespace CGAL::Surface_sweep_2 { template<class Curve> struct Default_arr_traits; }\n'
+        '#include <CGAL/Surface_sweep_2_algorithms.h>',
+        1,
+    ),
+    (
+        r'CGAL::compute_intersection_points\(segments.begin\(\), segments.end\(\), std::back_inserter\(intersections_pt\)\);',
+        'CGAL::Arr_segment_traits_2<CGAL::Exact_predicates_exact_constructions_kernel> traits;\n'
+        '    CGAL::compute_intersection_points(segments.begin(), segments.end(), std::back_inserter(intersections_pt), false, traits);',
+        1,
+    ),
+])
+
 patch("src/libslic3r/Arachne/WallToolPaths.cpp", [
+    # The bead count is size_t. On WASM32 its saturating bound must fit
+    # 32 bits before doubling, even though geometry coordinates are 64-bit.
+    (
+        r'const size_t max_bead_count = \(inset_count < std::numeric_limits<coord_t>::max\(\) / 2\) \? 2 \* inset_count : std::numeric_limits<coord_t>::max\(\);',
+        r'const size_t max_bead_count = inset_count <= std::numeric_limits<size_t>::max() / 2 ? 2 * inset_count : std::numeric_limits<size_t>::max();',
+        1,
+    ),
     (
         r'(template<typename T> bool shorterThan\(const T &shape, const coord_t check_length\)\s*\n\{\s*\n)(\s*)(const auto \*p0)',
         r'\1\2if (shape.empty())\n'
