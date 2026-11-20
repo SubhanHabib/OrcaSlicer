@@ -483,6 +483,7 @@ if [[ ! -f "$install_prefix/.assimp-5.4.3" ]]; then
     touch "$install_prefix/.assimp-5.4.3"
 fi
 )
+scripts/build-image-deps.sh "$(pwd)/deps-install" "$(pwd)/build-wasm/image-deps"
 if [[ ${1:-} == --deps ]]; then exit 0; fi
 # Configure WASM build
 # ══════════════════════════════════════════════════════════
@@ -521,7 +522,7 @@ emcmake cmake \
   -DCGAL_DIR="${DEP_INSTALL}/lib/cmake/CGAL" \
   -DNLOPT_LIBRARY="${DEP_INSTALL}/lib/libnlopt.a" \
   -DNLOPT_INCLUDE_DIR="${DEP_INSTALL}/include" \
-  "-DCMAKE_CXX_FLAGS=-I${COMMON_SHIM_DIR} -DBOOST_HAS_PTHREADS=1 -DSLIC3R_WASM=1 -DSLIC3R_NO_OPENVDB=1 -DSLIC3R_NO_OPENCV=1 ${EXTRA_CXX_FLAGS}" \
+  "-DCMAKE_CXX_FLAGS=-I${COMMON_SHIM_DIR} -DBOOST_HAS_PTHREADS=1 -DSLIC3R_WASM=1 -DSLIC3R_NO_OPENVDB=1 ${EXTRA_CXX_FLAGS}" \
   "-DCMAKE_C_FLAGS=-I${COMMON_SHIM_DIR} ${EXTRA_C_FLAGS}"
 
 )

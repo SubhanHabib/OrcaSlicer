@@ -177,7 +177,7 @@ patch("src/libslic3r/CMakeLists.txt", [
     # builds) and the real Format/STEP.cpp is used.
     (
         r'(target_compile_definitions\s*\(\s*libslic3r\s+PUBLIC)',
-        r'\1\n  $<$<BOOL:${SLIC3R_WASM}>:SLIC3R_WASM;SLIC3R_NO_OPENVDB;SLIC3R_NO_OPENCV>',
+        r'\1\n  $<$<BOOL:${SLIC3R_WASM}>:SLIC3R_WASM;SLIC3R_NO_OPENVDB>',
         1,
     ),
     # OpenCASCADE find/link: no WASM guard — our cmake/FindOpenCASCADE.cmake
@@ -198,13 +198,6 @@ patch("src/libslic3r/CMakeLists.txt", [
         r'TKDESTEP',
         0,
     ),
-    # No guard needed for `opencv_world` or draco: cmake/FindOpenCV.cmake
-    # and Finddraco.cmake already stub `opencv_world` and `draco::draco` as
-    # empty INTERFACE targets and set *_FOUND, and this repo's WASM build
-    # always prepends cmake/ to CMAKE_MODULE_PATH, so those stubs are
-    # the only Find modules that can ever resolve here. (OpenVDB's genexpr
-    # guard below is kept — it interacts with the Layer 2 override injection
-    # in a way these two don't.)
     # The browser shim deliberately provides an empty OpenVDB target.
     # Exclude the native implementation and its link on the staged WASM tree.
     (
@@ -217,11 +210,10 @@ patch("src/libslic3r/CMakeLists.txt", [
         r'set(CMAKE_POLICY_DEFAULT_CMP0167 OLD)',
         0,
     ),
-    # Upstream spells the dependency Draco. Select the browser shim on
-    # case-sensitive builders, where Finddraco and FindDraco are distinct.
+    # The real upstream Draco install exports a lowercase config package.
     (
         r'find_package\(Draco REQUIRED\)',
-        r'find_package(draco REQUIRED)',
+        r'find_package(draco CONFIG REQUIRED)',
         0,
     ),
     # JPEG: embuilder pre-builds libjpeg into the Emscripten sysroot, so
@@ -269,7 +261,6 @@ patch("src/libslic3r/AABBTreeLines.hpp", [
 #       now that OCCT is compiled into the engine.
 # =============================================================================
 copy_override("src/libslic3r/OpenVDBUtils.hpp")
-copy_override("src/libslic3r/ObjColorUtils.hpp")
 
 # =============================================================================
 # 4c. src/libslic3r/CMakeLists.txt — inject WASM override sources
@@ -291,10 +282,8 @@ if(SLIC3R_WASM AND DEFINED ORCA_WEB_OVERRIDES_DIR)
   #       with OCCT (see the "Build WASM deps — OCCT" step in
   #       .github/workflows/build-wasm.yml, or build-local-wsl.sh locally).
   set(_wasm_orig_stubs
-    "${CMAKE_CURRENT_SOURCE_DIR}/Format/DRC.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Format/svg.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/OpenVDBUtils.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ObjColorUtils.cpp"
   )
   # Files that may be reorganised in future OrcaSlicer versions
   set(_wasm_maybe_stubs
@@ -309,10 +298,8 @@ if(SLIC3R_WASM AND DEFINED ORCA_WEB_OVERRIDES_DIR)
   set_source_files_properties(${_wasm_orig_stubs} PROPERTIES HEADER_FILE_ONLY TRUE)
 
   target_sources(libslic3r PRIVATE
-    "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/Format/DRC.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/Format/svg.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/OpenVDBUtils.cpp"
-    "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/ObjColorUtils.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/SLA/Hollowing.cpp"
     "${ORCA_WEB_OVERRIDES_DIR}/src/libslic3r/Shape/TextShape.cpp"
   )

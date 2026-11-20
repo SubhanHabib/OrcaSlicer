@@ -22,7 +22,6 @@ add_compile_definitions(
     SLIC3R_WASM=1
     SLIC3R_NO_OCCT=1
     SLIC3R_NO_OPENVDB=1
-    SLIC3R_NO_OPENCV=1
     # OrcaSlicer's Boost.Log ABI uses BOOST_LOG_NO_THREADS=1 even in the
     # pthread-enabled engine. The define selects its v2s_st symbols; without
     # it, consumers reference v2s_mt_posix and wasm-ld reports undefined

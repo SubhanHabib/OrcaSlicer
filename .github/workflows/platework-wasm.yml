@@ -22,7 +22,7 @@ jobs:
           path: |
             ports/wasm/deps-install
             ~/.cache/ccache
-          key: wasm-deps-${{ runner.os }}-${{ hashFiles('ports/wasm/scripts/build-local-wsl.sh', 'ports/wasm/patches/**') }}
+          key: wasm-deps-${{ runner.os }}-${{ hashFiles('ports/wasm/scripts/build-local-wsl.sh', 'ports/wasm/scripts/build-image-deps.sh', 'ports/wasm/patches/**') }}
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk /opt/emsdk

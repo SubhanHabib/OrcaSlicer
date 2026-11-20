@@ -37,7 +37,7 @@ on:
 jobs:
   core:
     name: iOS core (${{ matrix.slice }})
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -196,7 +196,7 @@ jobs:
   xcframework:
     name: OrcaCore.xcframework
     needs: core
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Download slices
         uses: actions/download-artifact@v7
