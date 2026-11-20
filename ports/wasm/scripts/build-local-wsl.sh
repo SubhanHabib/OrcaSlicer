@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -e
+# shellcheck disable=SC1091
+set -eo pipefail
 
 export OCCT_VERSION="${OCCT_VERSION:-7.8.1}"
 export EMSDK_VERSION="${EMSDK_VERSION:-3.1.74}"
@@ -46,7 +47,10 @@ if [[ ! -d orca ]]; then
     git -C orca checkout --detach "$revision"
 fi
 test "$(git -C orca rev-parse HEAD)" = "$revision"
-python3 patches/apply.py
+if [[ ! -f orca/.platework-wasm-prepared ]]; then
+    python3 patches/apply.py
+    touch orca/.platework-wasm-prepared
+fi
 )
 
 # ══════════════════════════════════════════════════════════
@@ -118,7 +122,7 @@ B2_EXTRA_CXXFLAGS="cxxflags=-fwasm-exceptions -pthread"
 echo "[boost] installed headers:"
 ls "${INSTALL}/include/boost/version.hpp" && echo "  boost/version.hpp OK"
 echo "[boost] installed libs (sample):"
-ls "${INSTALL}/lib/libboost_system"* 2>/dev/null | head -3 || echo "  no libboost_system found!"
+test -f "${INSTALL}/lib/libboost_system.a"
 touch "${STAMP}"
 
 )
@@ -134,7 +138,7 @@ STAMP="${INSTALL}/.math_built_mt_native_eh_v1"
 
 GMP_VERSION=6.3.0
 MPFR_VERSION=4.2.1
-CGAL_VERSION=5.6.2
+CGAL_VERSION=6.2.1
 DL=/tmp/math-dl
 mkdir -p "${DL}"
 
@@ -201,7 +205,7 @@ INSTALL="$(pwd)/deps-install"
 # differ by -pthread) so that bumping either invalidates it even
 # if the cache step above only fell back to an older cache via
 # restore-keys.
-STAMP="${INSTALL}/.headers_built_eigen5.0.1_nlohmann3.11.3_expat2.5.0_nlopt2.7.1_cereal1.3.2_mt_native_eh_v1"
+STAMP="${INSTALL}/.headers_built_eigen5.0.1_nlohmann3.11.3_expat2.10.0_nlopt2.7.1_cereal1.3.2_mt_native_eh_v1"
 [[ -f "${STAMP}" ]] && echo "[headers+expat+nlopt] cached" && exit 0
 
 # ── Eigen3 (header-only, install cmake config) ────────────────
@@ -225,11 +229,11 @@ cmake --build /tmp/nlohmann-build --target install
 
 # ── EXPAT (XML parser — needed by libslic3r) ──────────────────
 echo "[expat] building…"
-curl -fL "https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.xz" \
+curl -fL "https://github.com/libexpat/libexpat/releases/download/R_2_10_0/expat-2.10.0.tar.xz" \
   | tar xJ -C /tmp/
-emcmake cmake -S /tmp/expat-2.5.0 -B /tmp/expat-build -G Ninja \
+emcmake cmake -S /tmp/expat-2.10.0 -B /tmp/expat-build -G Ninja \
   -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
-  -DEXPAT_BUILD_TOOLS=OFF \
+  -DEXPAT_DTD=ON -DEXPAT_GE=ON -DEXPAT_BUILD_TOOLS=OFF \
   -DEXPAT_BUILD_EXAMPLES=OFF \
   -DEXPAT_BUILD_TESTS=OFF \
   -DEXPAT_SHARED_LIBS=OFF \
@@ -454,6 +458,25 @@ touch "${STAMP}"
 )
 
 # ══════════════════════════════════════════════════════════
+# Build the texture import library used by Orca 2.5.
+(
+install_prefix="$(pwd)/deps-install"
+if [[ ! -f "$install_prefix/.assimp-5.4.3" ]]; then
+    curl -fsSL --retry 3 https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz -o /tmp/assimp-wasm.tar.gz
+    echo "66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb  /tmp/assimp-wasm.tar.gz" | sha256sum -c -
+    tar xzf /tmp/assimp-wasm.tar.gz -C /tmp
+    emcmake cmake -S /tmp/assimp-5.4.3 -B /tmp/assimp-wasm-build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$install_prefix" -DCMAKE_BUILD_TYPE=Release \
+        "-DCMAKE_CXX_FLAGS=$EXTRA_CXX_FLAGS" "-DCMAKE_C_FLAGS=$EXTRA_C_FLAGS" \
+        -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF -DASSIMP_NO_EXPORT=ON \
+        -DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF -DASSIMP_BUILD_OBJ_IMPORTER=ON \
+        -DASSIMP_BUILD_GLTF_IMPORTER=ON -DASSIMP_BUILD_FBX_IMPORTER=ON \
+        -DASSIMP_BUILD_ZLIB=OFF -DASSIMP_WARNINGS_AS_ERRORS=OFF
+    cmake --build /tmp/assimp-wasm-build --target install --parallel 4
+    touch "$install_prefix/.assimp-5.4.3"
+fi
+)
+if [[ ${1:-} == --deps ]]; then exit 0; fi
 # Configure WASM build
 # ══════════════════════════════════════════════════════════
 (
@@ -475,7 +498,7 @@ emcmake cmake \
   -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -DCMAKE_MODULE_PATH="${WORK}/cmake" \
   -DCMAKE_PROJECT_INCLUDE_BEFORE="${WORK}/cmake/wasm_find_paths.cmake" \
-  -DSLIC3R_WASM=ON \
+  -DORCA_MOBILE=ON -DSLIC3R_WASM=ON -DSLIC3R_PCH=OFF \
   -DSLIC3R_GUI=OFF \
   -DSLIC3R_STATIC=ON \
   -DSLIC3R_OPENCASCADE=ON \

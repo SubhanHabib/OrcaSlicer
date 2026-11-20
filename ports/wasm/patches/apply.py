@@ -553,72 +553,9 @@ patch("src/libslic3r/Arachne/WallToolPaths.cpp", [
 ])
 
 # =============================================================================
-# 8f. WallToolPaths.hpp — default-initialize WallToolPathsParams fields
-#     Next crash after 8e (same UBSan location, unchanged): min_length_factor
-#     itself DOES have a documented fallback in make_paths_params() (0.5f),
-#     but min_bead_width, min_feature_size and wall_transition_length are
-#     only conditionally assigned there with NO else-fallback — if the
-#     corresponding print_object_config option isn't present (our headless
-#     WASM build ships no bundled profile JSON, unlike a real OrcaSlicer
-#     install), those fields stay uninitialized garbage. Rather than chase
-#     exactly which uninitialized field's garbage bit pattern produces the
-#     observed NaN in this particular build, default-initialize the whole
-#     struct to the same values make_paths_params() already documents as
-#     intended fallbacks (or 0/false for the ones with none documented) —
-#     a normal, idiomatic fix that only changes behavior for previously-UB
-#     construction paths.
-#
-#     The four percent-of-nozzle-diameter fields (min_bead_width,
-#     min_feature_size, wall_transition_length, wall_transition_filter_
-#     deviation) were originally zeroed here — that's NOT what "no override
-#     present" means upstream. PrintConfig.cpp defines real, deliberately
-#     non-zero defaults for these (min_bead_width 85%, min_feature_size 25%,
-#     wall_transition_length 100%, wall_transition_filter_deviation 25%, all
-#     as a percentage of nozzle diameter; wall_transition_angle 10 degrees
-#     flat, not percent-based). Zero for wall_transition_length/angle in
-#     particular tells Arachne to allow a wall-count transition at every
-#     infinitesimal width change instead of upstream's intended ~1-nozzle-
-#     width/10-degree smoothing window — on simple geometry (no width
-#     variation) this is inert, but zero values would tell Arachne to allow
-#     a wall-count transition at every infinitesimal width change instead of
-#     upstream's intended ~1-nozzle-width/10-degree smoothing window. Every
-#     printer profile this app ships uses a 0.4mm nozzle (see
-#     src/data/orca-profiles.json), so hardcode each percent-based default
-#     as its absolute-mm equivalent for 0.4mm rather than 0.
-#
-#     NOTE (2026-07-07): this patch was originally believed to also fix the
-#     Voron Design Cube multi-minute hang. It does not — the hang reproduces
-#     with these exact params passed explicitly through the config (and
-#     orc_init starts from FullPrintConfig defaults anyway, so
-#     make_paths_params() never actually sees a missing option). The real
-#     cause was Boost.Log's broken default sink amplifying Arachne's
-#     per-edge warning storm — see the DisableBoostLogOnInit comment in
-#     bridge/slicer.cpp. This patch stays as defensive
-#     initialization for genuinely-uninitialized construction paths.
-# =============================================================================
-patch("src/libslic3r/Arachne/WallToolPaths.hpp", [
-    (
-        r'float   min_bead_width;\n    float   min_feature_size;\n    float   min_length_factor;\n    float   wall_transition_length;\n    float   wall_transition_angle;\n    float   wall_transition_filter_deviation;\n    int     wall_distribution_count;\n    bool    is_top_or_bottom_layer;',
-        r'float   min_bead_width = 0.34f;\n'
-        r'    float   min_feature_size = 0.1f;\n'
-        r'    float   min_length_factor = 0.5f;\n'
-        r'    float   wall_transition_length = 0.4f;\n'
-        r'    float   wall_transition_angle = 10.f;\n'
-        r'    float   wall_transition_filter_deviation = 0.1f;\n'
-        r'    int     wall_distribution_count = 1;\n'
-        r'    bool    is_top_or_bottom_layer = false;',
-        1,
-    ),
-])
-verify_contains(
-    "src/libslic3r/Arachne/WallToolPaths.hpp",
-    "float   min_bead_width = 0.34f;",
-    "WallToolPathsParams default-init patch (8f) did not apply — the Arachne "
-    "uninitialized-struct crash this fixes may have regressed (upstream "
-    "OrcaSlicer may have reformatted this struct; update the regex above).",
-)
+# Orca 2.5 initializes WallToolPathsParams in its declaration and resolves
+# nozzle-relative widths in make_paths_params. Keep those upstream values.
 
-# =============================================================================
 # 8g. Thread.cpp — keep Emscripten's unsupported thread naming as a no-op
 #     Thread.cpp's generic "posix" branch (the #else after the __APPLE__
 #     special-case) calls pthread_setname_np()/pthread_getname_np()
@@ -671,66 +608,8 @@ verify_contains(
 )
 
 # =============================================================================
-# 8h. Forward native WebAssembly EH flags into OrcaSlicer's dependency builds.
-#     CMake's ExternalProject helper omits parent compile flags by default.
-#     Preserve the wasm32 native-EH C/C++ flags in all child builds and replace
-#     oneTBB's incompatible Emscripten `-fexceptions` override.
-# =============================================================================
-patch("deps/CMakeLists.txt", [
-    (
-        r'(?m)^([ \t]*-DCMAKE_CXX_COMPILER_LAUNCHER:STRING=\$\{CMAKE_CXX_COMPILER_LAUNCHER\})(?!\n[ \t]*"-DCMAKE_C_FLAGS:STRING=\$\{CMAKE_C_FLAGS\}")$',
-        r'\1\n            "-DCMAKE_C_FLAGS:STRING=${CMAKE_C_FLAGS}"\n            "-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"',
-        0,
-    ),
-])
-if not DRY_RUN:
-    verify_contains(
-        "deps/CMakeLists.txt",
-        '"-DCMAKE_C_FLAGS:STRING=${CMAKE_C_FLAGS}"',
-        "OrcaSlicer's child builds do not inherit wasm longjmp C flags.",
-    )
-    verify_contains(
-        "deps/CMakeLists.txt",
-        '"-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"',
-        "OrcaSlicer's child builds do not inherit native WebAssembly EH CXX flags.",
-    )
+# The standalone WASM dependency build applies the oneTBB EH patch directly.
 
-patch("deps/TBB/TBB.cmake", [
-    (
-        r'(?s)^if \(FLATPAK AND "\$\{CMAKE_CXX_COMPILER_ID\}" STREQUAL "GNU"\)\s*'
-        r'set\(_patch_command .*?\)\s*else\(\)\s*set\(_patch_command ""\)\s*endif\(\)',
-        'if (EMSCRIPTEN)\n'
-        '    set(_patch_command ${CMAKE_COMMAND} -DTBB_SOURCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_LIST_DIR}/wasm-exceptions.cmake)\n'
-        'elseif (FLATPAK AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")\n'
-        '    set(_patch_command ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_LIST_DIR}/GNU.cmake ./cmake/compilers/GNU.cmake)\n'
-        'else()\n'
-        '    set(_patch_command "")\n'
-        'endif ()',
-        0,
-    ),
-])
-_tbb_cmake = ORCA / "deps" / "TBB" / "TBB.cmake"
-if _tbb_cmake.exists():
-    _tbb_text = _tbb_cmake.read_text(encoding="utf-8")
-    if "${CMAKE_CURRENT_LIST_DIR}/wasm-exceptions.cmake" not in _tbb_text:
-        if DRY_RUN:
-            print("  WOULD VERIFY: oneTBB native-EH patch command after patch")
-        else:
-            _msg = "oneTBB native-EH patch command was not configured"
-            print(f"FATAL: {_msg}", file=sys.stderr)
-            sys.exit(1)
-
-    _tbb_patch = _tbb_cmake.parent / "wasm-exceptions.cmake"
-    _tbb_patch_source = Path(__file__).resolve().parent / "onetbb" / "wasm-exceptions.cmake"
-    _tbb_patch_text = _tbb_patch_source.read_text(encoding="utf-8")
-    if not _tbb_patch.exists() or _tbb_patch.read_text(encoding="utf-8") != _tbb_patch_text:
-        if DRY_RUN:
-            print("  WOULD WRITE: deps/TBB/wasm-exceptions.cmake")
-        else:
-            _tbb_patch.write_text(_tbb_patch_text, encoding="utf-8")
-            print("  WROTE: deps/TBB/wasm-exceptions.cmake")
-
-# =============================================================================
 # 9. Root CMakeLists.txt — append the bridge + WASM link target
 # =============================================================================
 BRIDGE_INJECTION = """\

@@ -14,6 +14,7 @@ trap cleanup EXIT
 
 provided_em_cache="${EM_CACHE:-}"
 # Emscripten's default cache may live under a read-only SDK installation.
+# shellcheck disable=SC1091
 source "$EMSDK/emsdk_env.sh" >/dev/null
 if [[ -n "$provided_em_cache" ]]; then
     export EM_CACHE="$provided_em_cache"
@@ -80,6 +81,8 @@ for variant in mt wasm64-mt; do
     thread_flags=(-pthread)
     pthread_value=1
     memory_flags=()
+    # Commas in linker flags are passed through to wasm-ld.
+    # shellcheck disable=SC2054
     link_flags=(
         -fwasm-exceptions
         -sSUPPORT_LONGJMP=wasm

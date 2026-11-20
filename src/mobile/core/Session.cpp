@@ -929,10 +929,9 @@ std::string Session::save_project(const std::string& path)
         if (im.plates.size() != 1 || !plate.sliced || !plate.exported)
             throw std::runtime_error("Slice a single plate before exporting.");
         auto& pd = *owner.front();
-        const std::string model = cfg.opt_string("printer_model");
-        if (model != "Bambu Lab A1" && model != "Bambu Lab A1 mini")
-            throw std::runtime_error("Unsupported printer for this plate.");
-        pd.printer_model_id = model == "Bambu Lab A1" ? "N2S" : "N1";
+        pd.printer_model_id = im.bundle.printers.get_edited_preset().get_printer_type(&im.bundle);
+        if (pd.printer_model_id.empty())
+            throw std::runtime_error("The selected profile has no printer model ID for 3MF export.");
         pd.gcode_file = plate.exported_file;
         pd.is_sliced_valid = true;
         pd.nozzle_diameters = cfg.option("nozzle_diameter")->serialize();

@@ -17,7 +17,8 @@ jobs:
           node-version: 26
       - name: Install build tools
         run: sudo apt-get update -qq && sudo apt-get install -y ccache ninja-build texinfo m4
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: deps
         with:
           path: |
             ports/wasm/deps-install
@@ -28,6 +29,15 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk /opt/emsdk
           /opt/emsdk/emsdk install 3.1.74
           /opt/emsdk/emsdk activate 3.1.74
+      - name: Build third-party libraries
+        run: ports/wasm/scripts/build-local-wsl.sh --deps
+      - uses: actions/cache/save@v4
+        if: steps.deps.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ports/wasm/deps-install
+            ~/.cache/ccache
+          key: ${{ steps.deps.outputs.cache-primary-key }}
       - name: Build and exercise the browser binding
         run: ports/wasm/scripts/build-local-wsl.sh
       - name: Test the browser API contract
