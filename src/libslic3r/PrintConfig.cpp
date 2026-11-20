@@ -1,4 +1,5 @@
 #include "PrintConfig.hpp"
+#include <sstream>
 #include "CommonDefs.hpp"
 #include "Point.hpp"
 #include "Polygon.hpp"

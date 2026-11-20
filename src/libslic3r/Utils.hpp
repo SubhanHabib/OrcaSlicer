@@ -12,6 +12,7 @@
 #include <boost/date_time/posix_time/posix_time_io.hpp>
 #include <algorithm>
 #include <iomanip>
+#include <sstream>
 #include <limits>
 #include <locale>
 #include <set>

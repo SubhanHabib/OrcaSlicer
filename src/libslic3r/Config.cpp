@@ -1,4 +1,5 @@
 #include "Config.hpp"
+#include <sstream>
 #include "Exception.hpp"
 #include "Point.hpp"
 #include "format.hpp"

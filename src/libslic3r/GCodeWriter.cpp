@@ -1,4 +1,6 @@
 #include "GCodeWriter.hpp"
+#include <sstream>
+#include "CustomGCode.hpp"
 #include "Config.hpp"
 #include "Extruder.hpp"
 #include "Geometry.hpp"

@@ -10,6 +10,7 @@
 #include <limits>
 #include <exception>
 #include <math.h>
+#include <sstream>
 #include <cstring>
 #include <cfloat>
 #include <ostream>

@@ -3,6 +3,7 @@
 
 #include "Exception.hpp"
 #include "libslic3r.h"
+#include <sstream>
 
 #include <sstream>
 #include <string>

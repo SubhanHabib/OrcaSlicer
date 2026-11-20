@@ -1,6 +1,7 @@
 #include "ArcFitter.hpp"
 #include <tuple>
 #include "BoundingBox.hpp"
+#include <sstream>
 #include "Circle.hpp"
 #include "Config.hpp"
 #include "GCode/GCodeProcessor.hpp"

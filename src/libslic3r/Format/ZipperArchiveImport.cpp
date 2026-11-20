@@ -1,4 +1,5 @@
 #include "ZipperArchiveImport.hpp"
+#include <sstream>
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/LocalesUtils.hpp"

@@ -1,4 +1,5 @@
 #include "../libslic3r.h"
+#include <sstream>
 #include "../Exception.hpp"
 #include "../IMEXHelpers.hpp"
 #include "../Model.hpp"

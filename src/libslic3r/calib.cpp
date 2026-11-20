@@ -1,4 +1,5 @@
 #include "calib.hpp"
+#include <sstream>
 #include "GCode/BeltKinematics.hpp"
 #include "BoundingBox.hpp"
 #include "Config.hpp"

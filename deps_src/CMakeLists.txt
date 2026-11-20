@@ -17,10 +17,13 @@ add_subdirectory(Shiny)
 add_subdirectory(admesh)
 add_subdirectory(clipper2)
 add_subdirectory(glu-libtess)
-add_subdirectory(hidapi)
-add_subdirectory(hints)        # Hints library with utility executable
+# GUI-only: hidapi needs IOKit HID, which iOS does not have; the others are unused by the core.
+if (NOT ORCA_MOBILE)
+    add_subdirectory(hidapi)
+    add_subdirectory(hints)        # Hints library with utility executable
+    add_subdirectory(imguizmo)
+endif ()
 add_subdirectory(imgui)
-add_subdirectory(imguizmo)
 add_subdirectory(libigl)
 add_subdirectory(libnest2d)
 add_subdirectory(mcut)

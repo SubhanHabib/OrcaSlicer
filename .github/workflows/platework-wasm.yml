@@ -1,0 +1,42 @@
+name: Build Platework WebAssembly
+on:
+  push:
+    branches: [platework]
+    paths: ['src/**', 'deps*/**', 'cmake/**', 'ports/wasm/**', 'CMakeLists.txt', '.github/workflows/platework-wasm.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y ccache ninja-build texinfo m4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ports/wasm/deps-install
+            ~/.cache/ccache
+          key: wasm-deps-${{ runner.os }}-${{ hashFiles('ports/wasm/scripts/build-local-wsl.sh', 'ports/wasm/patches/**') }}
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk /opt/emsdk
+          /opt/emsdk/emsdk install 3.1.74
+          /opt/emsdk/emsdk activate 3.1.74
+      - name: Build and exercise the browser binding
+        run: ports/wasm/scripts/build-local-wsl.sh
+      - name: Test the browser API contract
+        working-directory: ports/wasm
+        run: |
+          node scripts/conformance.mjs --wasm-dir artifacts
+          node scripts/binding-test.mjs --wasm-dir artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platework-wasm
+          path: ports/wasm/wasm-artifacts/
+          if-no-files-found: error

@@ -87,8 +87,11 @@
 		#include <sys/sysctl.h>
 	#endif
 	#ifdef __APPLE__
+		#include <TargetConditionals.h>
 		#include <mach/mach.h>
-		#include <libproc.h>
+		#if TARGET_OS_OSX
+			#include <libproc.h>
+		#endif
 	#endif
 	#ifdef __linux__
 		#include <sys/stat.h>
@@ -1605,7 +1608,7 @@ std::string get_process_name(int pid)
 	while (auto q = strchr(p + 1, '\\'))
 		p = q;
 	return decode_path(p);
-#elif defined __APPLE__
+#elif defined(__APPLE__) && TARGET_OS_OSX
 	char pathbuf[PROC_PIDPATHINFO_MAXSIZE] = { 0 };
 	if (pid == 0) pid = ::getpid();
 	int ret = proc_pidpath(pid, pathbuf, sizeof(pathbuf));
@@ -1613,6 +1616,10 @@ std::string get_process_name(int pid)
 	char* p = pathbuf;
 	while (auto q = strchr(p + 1, '/')) p = q;
 	return p;
+#elif defined(__APPLE__)
+	// iOS has no libproc; the process name is not observable from inside the sandbox.
+	(void)pid;
+	return {};
 #else
     char pathbuf[512]  = {0};
     char proc_path[32] = "/proc/self/exe";

@@ -1,4 +1,5 @@
 #include "FanMover.hpp"
+#include <sstream>
 
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/libslic3r.h"

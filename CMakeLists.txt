@@ -123,6 +123,26 @@ option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
 
 # Python stubgen module
 option(ORCA_BUILD_PYTHON_STUBGEN_MODULE "Build importable Python module for pybind11-stubgen" ON)
+
+# Mobile core: libslic3r plus the façade in src/mobile, as a static library for a
+# React Native app. No GUI, CLI, Python runtime, tools or tests. See docs/HLSD/mobile.md.
+option(ORCA_MOBILE "Build only the slicing core and the mobile façade" OFF)
+option(ORCA_MOBILE_PLUGINS "Embed the Python plugin runtime in the mobile core" OFF)
+if (ORCA_MOBILE)
+    set(SLIC3R_GUI 0 CACHE BOOL "" FORCE)
+    # No Design/CAD tab on mobile; the mobile deps build OCCT without ModelingAlgorithms.
+    set(SLIC3R_CAD 0 CACHE BOOL "" FORCE)
+    # A mobile OS only takes static libraries. A desktop host building the core for
+    # its tests keeps the choice, so it can use the system's shared libraries.
+    if (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR ANDROID)
+        set(SLIC3R_STATIC 1 CACHE BOOL "" FORCE)
+    endif ()
+    set(ORCA_BUILD_PYTHON_STUBGEN_MODULE OFF CACHE BOOL "" FORCE)
+    set(SLIC3R_BUILD_SANDBOXES OFF CACHE BOOL "" FORCE)
+    set(ORCA_TOOLS OFF CACHE BOOL "" FORCE)
+    # BUILD_TESTS stays available: on a desktop host it builds the façade tests. The
+    # iOS build is a cross build, which disables tests below.
+endif ()
 set(ORCA_BUNDLED_UV_EXECUTABLE "" CACHE FILEPATH "Path to a uv executable to bundle for Python package installation. Leave empty to auto-download.")
 
 # Auto-download uv if not provided by the user.
@@ -163,7 +183,7 @@ if(FLATPAK AND NOT ORCA_BUNDLED_UV_EXECUTABLE AND EXISTS "${ORCA_UV_FLATPAK_BINA
     set(ORCA_BUNDLED_UV_EXECUTABLE "${ORCA_UV_FLATPAK_BINARY}")
 endif()
 
-if(NOT ORCA_BUNDLED_UV_EXECUTABLE)
+if(NOT ORCA_BUNDLED_UV_EXECUTABLE AND NOT ORCA_MOBILE)
     if(NOT EXISTS "${ORCA_UV_BINARY}")
         # Select uv by TARGET arch. On macOS universal builds each leg sets a single
         # CMAKE_OSX_ARCHITECTURES (and the x86_64 leg cross-builds on an arm64 runner),
@@ -283,6 +303,11 @@ if (APPLE)
     endif ()
     set(CMAKE_FIND_FRAMEWORK LAST)
     set(CMAKE_FIND_APPBUNDLE LAST)
+    # CMake leaves CMAKE_SYSTEM_PROCESSOR empty for iOS; the single target architecture
+    # is what the checks below and the autotools recipes mean by it.
+    if (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT CMAKE_SYSTEM_PROCESSOR)
+        set(CMAKE_SYSTEM_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+    endif ()
     list(FIND CMAKE_OSX_ARCHITECTURES ${CMAKE_SYSTEM_PROCESSOR} _arch_idx)
     if (CMAKE_OSX_ARCHITECTURES AND _arch_idx LESS 0)
         set(IS_CROSS_COMPILE TRUE)
@@ -310,6 +335,16 @@ if (APPLE)
         endif ()
     endif ()
 
+    # iOS is always a cross build from the Mac host, whatever the architectures say:
+    # nothing built here can run on the host (tests, the encoding check).
+    if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(IS_CROSS_COMPILE TRUE)
+    endif ()
+
+    message(STATUS "Orca: IS_CROSS_COMPILE: ${IS_CROSS_COMPILE}")
+elseif (ANDROID)
+    # Always a cross build from the host, like iOS: nothing built here can run on it.
+    set(IS_CROSS_COMPILE TRUE)
     message(STATUS "Orca: IS_CROSS_COMPILE: ${IS_CROSS_COMPILE}")
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
@@ -543,8 +578,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
 
-    find_package(DBus REQUIRED)
-    include_directories(SYSTEM ${DBUS_INCLUDE_DIRS})
+    # D-Bus backs the desktop integration in the GUI; the mobile core has none.
+    if (NOT ORCA_MOBILE)
+        find_package(DBus REQUIRED)
+        include_directories(SYSTEM ${DBUS_INCLUDE_DIRS})
+    endif ()
 endif()
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUXX)
@@ -826,7 +864,11 @@ find_package(TBB REQUIRED)
 # add_definitions(-DTBB_USE_CAPTURED_EXCEPTION=0)
 
 find_package(OpenSSL REQUIRED)
-find_package(CURL REQUIRED)
+if (NOT ORCA_MOBILE AND NOT SLIC3R_WASM)
+    find_package(CURL REQUIRED)
+endif()
+find_package(Freetype REQUIRED)
+find_package(ZLIB REQUIRED)
 
 if (SLIC3R_GUI)
     # LibDataChannel's installed export references its bundled dependencies,
@@ -859,11 +901,12 @@ if (SLIC3R_GUI)
     find_package(LibDataChannel CONFIG REQUIRED)
 endif()
 
+# libcurl is used by the GUI and the tools only; the mobile core does networking in the app.
+if (NOT ORCA_MOBILE)
+find_package(CURL REQUIRED)
 
 add_library(libcurl INTERFACE)
 target_link_libraries(libcurl INTERFACE CURL::libcurl)
-
-find_package(ZLIB REQUIRED)
 target_link_libraries(libcurl INTERFACE ZLIB::ZLIB)
 
 # Fixing curl's cmake config script bugs
@@ -893,6 +936,7 @@ if (SLIC3R_STATIC AND NOT SLIC3R_STATIC_EXCLUDE_CURL)
         target_link_libraries(libcurl INTERFACE ${OPENSSL_LIBRARIES})
     endif()
 endif()
+endif() # NOT ORCA_MOBILE
 
 ## OPTIONAL packages
 
@@ -904,6 +948,7 @@ find_package(EXPAT 2.10.0 REQUIRED)
 
 find_package(PNG REQUIRED)
 
+if (NOT ORCA_MOBILE)
 set(OpenGL_GL_PREFERENCE "LEGACY")
 find_package(OpenGL REQUIRED)
 
@@ -912,6 +957,7 @@ if(APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
 endif()
 
 find_package(glfw3 REQUIRED)
+endif() # NOT ORCA_MOBILE
 
 # Find the Cereal serialization library
 find_package(cereal REQUIRED)
@@ -964,6 +1010,30 @@ endforeach()
 
 find_package(NLopt 1.4 REQUIRED)
 
+# The embedded Python runtime is a GUI feature; the mobile core ships it only on request.
+if (NOT ORCA_MOBILE OR ORCA_MOBILE_PLUGINS)
+if (ORCA_MOBILE AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
+# BeeWare's prebuilt CPython (deps/python3/python3-ios.cmake): one Python.xcframework with
+# a dynamic framework per slice. The core is a static archive, so it only needs the headers;
+# the app links the framework the podspec vendors. No interpreter runs on the host, hence no
+# find_package(Python3): the imported target below is what pybind11::embed links.
+set(_python_xcframework "${CMAKE_PREFIX_PATH}/Python.xcframework")
+if (CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(_python_slice "ios-arm64_x86_64-simulator")
+else ()
+    set(_python_slice "ios-arm64")
+endif ()
+set(_python_slice_dir "${_python_xcframework}/${_python_slice}")
+if (NOT EXISTS "${_python_slice_dir}/Python.framework/Python")
+    message(FATAL_ERROR "Python.xcframework slice not found at ${_python_slice_dir}; build the deps with DEPS_MOBILE_PLUGINS=ON")
+endif ()
+file(GLOB _python_include_dir "${_python_slice_dir}/include/python3.*")
+add_library(Python3::Python SHARED IMPORTED)
+set_target_properties(Python3::Python PROPERTIES
+    IMPORTED_LOCATION "${_python_slice_dir}/Python.framework/Python"
+    INTERFACE_INCLUDE_DIRECTORIES "${_python_include_dir}"
+)
+else () # a host Python
 # Use bundled Python from deps instead of system Python
 set(_bundled_python_version "3.12.13")
 set(_bundled_python_abi "312")
@@ -1027,6 +1097,7 @@ endif()
 find_package(Python3 ${_bundled_python_version} EXACT REQUIRED
     COMPONENTS Interpreter Development.Embed
 )
+endif () # a host Python
 
 # Provide a minimal pybind11::embed target sourced from deps_src/pybind11 headers.
 set(PYBIND11_SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps_src/pybind11")
@@ -1043,6 +1114,7 @@ add_library(pybind11_embed INTERFACE)
 target_link_libraries(pybind11_embed INTERFACE pybind11_headers Python3::Python)
 target_compile_definitions(pybind11_embed INTERFACE PYBIND11_SIMPLE_GIL_MANAGEMENT)
 add_library(pybind11::embed ALIAS pybind11_embed)
+endif() # NOT ORCA_MOBILE OR ORCA_MOBILE_PLUGINS
 
 
 if(SLIC3R_STATIC)
@@ -1257,7 +1329,9 @@ endif ()
 add_subdirectory(src)
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT OrcaSlicer_app_gui)
 
-add_dependencies(gettext_make_pot hintsToPot)
+if (TARGET hintsToPot)
+    add_dependencies(gettext_make_pot hintsToPot)
+endif ()
 
 if(SLIC3R_BUILD_SANDBOXES)
     add_subdirectory(sandboxes)

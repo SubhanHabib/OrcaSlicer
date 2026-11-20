@@ -8,6 +8,14 @@ if (APPLE AND CMAKE_OSX_ARCHITECTURES)
         set (_context_abi_line "-DBOOST_CONTEXT_ABI:STRING=aapcs")
     endif ()
     set(_context_arch_line "-DBOOST_CONTEXT_ARCHITECTURE:STRING=${CMAKE_OSX_ARCHITECTURES}")
+elseif (DEPS_ANDROID)
+    if (ANDROID_ABI STREQUAL "arm64-v8a")
+        set(_context_abi_line "-DBOOST_CONTEXT_ABI:STRING=aapcs")
+        set(_context_arch_line "-DBOOST_CONTEXT_ARCHITECTURE:STRING=arm64")
+    elseif (ANDROID_ABI STREQUAL "x86_64")
+        set(_context_abi_line "-DBOOST_CONTEXT_ABI:STRING=sysv")
+        set(_context_arch_line "-DBOOST_CONTEXT_ARCHITECTURE:STRING=x86_64")
+    endif ()
 endif ()
 
 # Windows ARM64: Boost.Context's default fcontext implementation assembles .asm
@@ -17,6 +25,13 @@ endif ()
 set(_context_impl_line "")
 if (MSVC AND "${DEPS_ARCH}" STREQUAL "arm64")
     set(_context_impl_line "-DBOOST_CONTEXT_IMPLEMENTATION:STRING=winfib")
+endif ()
+
+# The mobile core does not link Boost.Python, and a cross build must not pick up the
+# host's Python for it.
+set(_boost_excluded "contract|fiber|numpy|stacktrace|wave|test")
+if (DEPS_MOBILE)
+    set(_boost_excluded "${_boost_excluded}|python")
 endif ()
 
 set(_options "")
@@ -44,7 +59,7 @@ orcaslicer_add_cmake_project(Boost
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95
     LIST_SEPARATOR |
     CMAKE_ARGS
-        -DBOOST_EXCLUDE_LIBRARIES:STRING=contract|fiber|numpy|stacktrace|wave|test
+        -DBOOST_EXCLUDE_LIBRARIES:STRING=${_boost_excluded}
         -DBOOST_LOCALE_ENABLE_ICU:BOOL=OFF # do not link to libicu, breaks compatibility between distros
         -DBUILD_TESTING:BOOL=OFF
         -DBOOST_IOSTREAMS_ENABLE_BZIP2:BOOL=OFF # avoid libbz2 soname differences in AppImage builds

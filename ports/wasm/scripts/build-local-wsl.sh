@@ -1,0 +1,543 @@
+#!/usr/bin/env bash
+set -e
+
+export OCCT_VERSION="${OCCT_VERSION:-7.8.1}"
+export EMSDK_VERSION="${EMSDK_VERSION:-3.1.74}"
+export ONETBB_VERSION="${ONETBB_VERSION:-v2021.13.2}"
+export EMSDK="${EMSDK:-/opt/emsdk}"
+export OUTPUT_NAME="${OUTPUT_NAME:-slicer-mt}"
+export BOOST_THREADING="${BOOST_THREADING:-multi}"
+export EXTRA_CXX_FLAGS="${EXTRA_CXX_FLAGS:--fwasm-exceptions -pthread}"
+export EXTRA_C_FLAGS="${EXTRA_C_FLAGS:--sSUPPORT_LONGJMP=wasm -pthread}"
+export EM_CACHE="${EM_CACHE:-/opt/emsdk/upstream/emscripten/cache}"
+source "$EMSDK/emsdk_env.sh"
+export CCACHE_DIR="$HOME/.cache/ccache"
+mkdir -p "$CCACHE_DIR"
+ccache --max-size=2G >/dev/null 2>&1 || true
+# Local-only: rolling-release distros (Arch, etc.) ship a much newer CMake
+# than CI's ubuntu-latest. Several deps (EXPAT 2.5.0 confirmed) declare an
+# old cmake_minimum_required() that newer CMake rejects outright ("Compatibility
+# with CMake < 3.5 has been removed"). This env var is CMake's own documented
+# escape hatch (3.31+) and applies to every invocation without patching each
+# dep's CMakeLists.txt. Not needed in CI, so not added to build-wasm.yml.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+cd "$(dirname "$0")/.."   # repo root (this script lives in scripts/)
+# The SDK's default cache may be read-only. Keep a local
+# cache beside the build tree; override it with WASM_EM_CACHE when needed.
+export EM_CACHE="${WASM_EM_CACHE:-$(pwd)/build-wasm/emscripten-cache-mt}"
+mkdir -p "$EM_CACHE"
+echo "[build-local-wsl] repo root: $(pwd)"
+
+
+# ══════════════════════════════════════════════════════════
+# Check native WebAssembly EH with mixed C/C++ and pthreads
+# ══════════════════════════════════════════════════════════
+(
+./scripts/check-wasm-eh.sh
+)
+
+# ══════════════════════════════════════════════════════════
+# Apply the WASM-only compatibility changes in a separate source tree at this
+# checkout's exact revision. Native and desktop builds keep their own sources.
+(
+revision=$(git rev-parse HEAD)
+if [[ ! -d orca ]]; then
+    git clone --local --no-checkout "$(git rev-parse --show-toplevel)" orca
+    git -C orca checkout --detach "$revision"
+fi
+test "$(git -C orca rev-parse HEAD)" = "$revision"
+python3 patches/apply.py
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — Boost
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+BOOST_VERSION="1.83.0"
+BOOST_UNDERSCORE="${BOOST_VERSION//./_}"
+INSTALL="$(pwd)/deps-install"
+# _v3 suffix: manually bumped, not tied to BOOST_VERSION — the
+# BOOST_LOG_NO_THREADS fix above changed Boost's build *flags*,
+# not its pinned version, so BOOST_VERSION alone wouldn't
+# invalidate a stale cached build. Restore-keys below prefix-match
+# regardless of this suffix (see "Restore dep cache"'s own
+# comment on why a version bump alone isn't sufficient), so
+# without this the job could restore its OLD, wrongly-built
+# libboost_log.a from cache and skip rebuilding it entirely.
+STAMP="${INSTALL}/.boost_built_mt_native_eh_v3"
+mkdir -p "${INSTALL}"
+[[ -f "${STAMP}" ]] && echo "[boost] stamp exists — skip" && exit 0
+
+echo "[boost] downloading Boost ${BOOST_VERSION}…"
+mkdir -p /tmp/boost
+curl -fL --retry 3 \
+  "https://archives.boost.org/release/${BOOST_VERSION}/source/boost_${BOOST_UNDERSCORE}.tar.gz" \
+  | tar xz -C /tmp/boost
+cd "/tmp/boost/boost_${BOOST_UNDERSCORE}"
+
+echo "[boost] bootstrapping b2…"
+./bootstrap.sh --with-toolset=clang
+
+echo "[boost] writing user-config.jam for emscripten toolset…"
+printf "using clang : emscripten : em++ :\n<archiver>emar\n<ranlib>emranlib ;\n" > ~/user-config.jam
+
+echo "[boost] building with b2 (emscripten, static, threading=${BOOST_THREADING})…"
+B2_DEFINES=(
+  "define=BOOST_LOG_WITHOUT_SYSLOG=1"
+  # Always on — see the step comment above for why this must match
+  # libslic3r's own (unconditional, upstream) compile flags.
+  "define=BOOST_LOG_NO_THREADS=1"
+)
+B2_EXTRA_CXXFLAGS="cxxflags=-fwasm-exceptions -pthread"
+
+./b2 \
+  toolset=clang-emscripten \
+  variant=release \
+  link=static \
+  threading="${BOOST_THREADING}" \
+  --layout=system \
+  --prefix="${INSTALL}" \
+  --with-atomic \
+  --with-chrono \
+  --with-date_time \
+  --with-filesystem \
+  --with-iostreams \
+  --with-locale \
+  --with-log \
+  --with-nowide \
+  --with-program_options \
+  --with-regex \
+  --with-system \
+  --with-thread \
+  "${B2_DEFINES[@]}" \
+  "${B2_EXTRA_CXXFLAGS}" \
+  -j"$(nproc)" \
+  install
+
+echo "[boost] installed headers:"
+ls "${INSTALL}/include/boost/version.hpp" && echo "  boost/version.hpp OK"
+echo "[boost] installed libs (sample):"
+ls "${INSTALL}/lib/libboost_system"* 2>/dev/null | head -3 || echo "  no libboost_system found!"
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — GMP / MPFR / CGAL
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+INSTALL="$(pwd)/deps-install"
+STAMP="${INSTALL}/.math_built_mt_native_eh_v1"
+[[ -f "${STAMP}" ]] && echo "[math] stamp exists — skip" && exit 0
+
+GMP_VERSION=6.3.0
+MPFR_VERSION=4.2.1
+CGAL_VERSION=5.6.2
+DL=/tmp/math-dl
+mkdir -p "${DL}"
+
+# ── GMP ──────────────────────────────────────────────────────
+echo "[gmp] building GMP ${GMP_VERSION}…"
+# Use GNU FTP mirror (gmplib.org blocks GitHub Actions runners)
+curl -fL --retry 3 \
+  "https://ftp.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz" | tar xJ -C "${DL}"
+cd "${DL}/gmp-${GMP_VERSION}"
+# CONFIG_SITE seeds cache vars before any check runs; export provides
+# the same value via direct env inheritance for all sub-configures.
+printf 'gmp_cv_asm_label_suffix=":"\n' > /tmp/gmp_site.sh
+export gmp_cv_asm_label_suffix=":"
+export CFLAGS="${EXTRA_C_FLAGS}"
+export CXXFLAGS="${EXTRA_CXX_FLAGS}"
+CONFIG_SITE=/tmp/gmp_site.sh emconfigure ./configure \
+  --prefix="${INSTALL}" \
+  --host=wasm32-unknown-emscripten \
+  --disable-shared --enable-static --disable-assembly \
+  --enable-cxx
+emmake make -j"$(nproc)"
+make install
+
+# ── MPFR ─────────────────────────────────────────────────────
+echo "[mpfr] building MPFR ${MPFR_VERSION}…"
+curl -fL --retry 3 \
+  "https://ftp.gnu.org/gnu/mpfr/mpfr-${MPFR_VERSION}.tar.xz" | tar xJ -C "${DL}"
+cd "${DL}/mpfr-${MPFR_VERSION}"
+emconfigure ./configure \
+  --prefix="${INSTALL}" --with-gmp="${INSTALL}" --disable-shared --enable-static
+emmake make -j"$(nproc)"
+make install
+unset CFLAGS CXXFLAGS
+
+# ── CGAL (header-only + cmake config) ────────────────────────
+echo "[cgal] installing CGAL ${CGAL_VERSION} cmake config…"
+curl -fL --retry 3 \
+  "https://github.com/CGAL/cgal/releases/download/v${CGAL_VERSION}/CGAL-${CGAL_VERSION}.tar.xz" \
+  | tar xJ -C "${DL}"
+cd "${DL}/CGAL-${CGAL_VERSION}"
+# CGAL is header-only; cmake just installs headers + CMake config files.
+# Use plain cmake (no emcmake) for the install step.
+cmake -S . -B /tmp/cgal-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGMP_INCLUDE_DIR="${INSTALL}/include" \
+  -DGMP_LIBRARIES="${INSTALL}/lib/libgmp.a" \
+  -DMPFR_INCLUDE_DIR="${INSTALL}/include" \
+  -DMPFR_LIBRARIES="${INSTALL}/lib/libmpfr.a"
+cmake --build /tmp/cgal-build --target install
+
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — Eigen3 / nlohmann / EXPAT / NLopt
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+INSTALL="$(pwd)/deps-install"
+# Stamp name is version-suffixed (like the OCCT step below) AND
+# variant-suffixed (new — EXPAT/NLopt's compiled objects now
+# differ by -pthread) so that bumping either invalidates it even
+# if the cache step above only fell back to an older cache via
+# restore-keys.
+STAMP="${INSTALL}/.headers_built_eigen5.0.1_nlohmann3.11.3_expat2.5.0_nlopt2.7.1_cereal1.3.2_mt_native_eh_v1"
+[[ -f "${STAMP}" ]] && echo "[headers+expat+nlopt] cached" && exit 0
+
+# ── Eigen3 (header-only, install cmake config) ────────────────
+echo "[eigen3] installing…"
+curl -fL "https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz" \
+  | tar xz -C /tmp/
+cmake -S /tmp/eigen-5.0.1 -B /tmp/eigen-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DBUILD_TESTING=OFF
+cmake --build /tmp/eigen-build --target install
+
+# ── nlohmann/json (header-only, install cmake config) ─────────
+echo "[nlohmann] installing…"
+git clone --depth 1 --branch v3.11.3 \
+  https://github.com/nlohmann/json.git /tmp/nlohmann
+cmake -S /tmp/nlohmann -B /tmp/nlohmann-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DJSON_BuildTests=OFF \
+  -DJSON_Install=ON
+cmake --build /tmp/nlohmann-build --target install
+
+# ── EXPAT (XML parser — needed by libslic3r) ──────────────────
+echo "[expat] building…"
+curl -fL "https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.xz" \
+  | tar xJ -C /tmp/
+emcmake cmake -S /tmp/expat-2.5.0 -B /tmp/expat-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DEXPAT_BUILD_TOOLS=OFF \
+  -DEXPAT_BUILD_EXAMPLES=OFF \
+  -DEXPAT_BUILD_TESTS=OFF \
+  -DEXPAT_SHARED_LIBS=OFF \
+  "-DCMAKE_C_FLAGS=${EXTRA_C_FLAGS}"
+emmake cmake --build /tmp/expat-build --target install
+
+# ── NLopt (optimizer — needed by libslic3r) ───────────────────
+echo "[nlopt] building…"
+curl -fL "https://github.com/stevengj/nlopt/archive/v2.7.1.tar.gz" \
+  | tar xz -C /tmp/
+emcmake cmake -S /tmp/nlopt-2.7.1 -B /tmp/nlopt-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DNLOPT_CXX=ON \
+  -DNLOPT_PYTHON=OFF \
+  -DNLOPT_GUILE=OFF \
+  -DNLOPT_MATLAB=OFF \
+  -DNLOPT_OCTAVE=OFF \
+  -DNLOPT_SWIG=OFF \
+  -DBUILD_SHARED_LIBS=OFF \
+  "-DCMAKE_C_FLAGS=${EXTRA_C_FLAGS}" \
+  "-DCMAKE_CXX_FLAGS=${EXTRA_CXX_FLAGS}"
+emmake cmake --build /tmp/nlopt-build --target install
+
+# ── cereal (header-only serialization — needed by libslic3r) ─────
+echo "[cereal] installing…"
+git clone --depth 1 --branch v1.3.2 \
+  https://github.com/USCiLab/cereal.git /tmp/cereal
+cmake -S /tmp/cereal -B /tmp/cereal-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DJUST_INSTALL_CEREAL=ON \
+  -DSKIP_PERFORMANCE_COMPARISON=ON \
+  -DBUILD_SANDBOX=OFF \
+  -DBUILD_DOC=OFF
+cmake --build /tmp/cereal-build --target install
+
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — libnoise
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+INSTALL="$(pwd)/deps-install"
+STAMP="${INSTALL}/.libnoise_built_mt_native_eh_v1"
+[[ -f "${STAMP}" ]] && echo "[libnoise] stamp exists — skip" && exit 0
+
+echo "[libnoise] downloading Orca-deps-libnoise 1.0…"
+curl -fL --retry 3 \
+  "https://github.com/SoftFever/Orca-deps-libnoise/archive/refs/tags/1.0.tar.gz" \
+  | tar xz -C /tmp/
+mv /tmp/Orca-deps-libnoise-1.0 /tmp/libnoise-src
+
+echo "[libnoise] configuring with Emscripten…"
+emcmake cmake -S /tmp/libnoise-src -B /tmp/libnoise-build -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  "-DCMAKE_CXX_FLAGS=${EXTRA_CXX_FLAGS}"
+
+echo "[libnoise] building…"
+emmake cmake --build /tmp/libnoise-build --target install -j"$(nproc)"
+
+echo "[libnoise] verifying install…"
+ls "${INSTALL}/include/libnoise/noise.h" && echo "  headers OK"
+ls "${INSTALL}/lib/liblibnoise_static.a" && echo "  lib OK"
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — OCCT
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+OCCT_VERSION="7.8.1"
+OCCT_TAG="V${OCCT_VERSION//./_}"
+INSTALL="$(pwd)/deps-install"
+# _v4 suffix: manually bumped, not tied to OCCT_TAG — the WebAssembly
+# EH patch below changes OCCT's build flags, not its pinned version,
+# so OCCT_TAG alone wouldn't invalidate a stale cached build (same
+# gotcha as the Boost stamp bump above: cache keys omit these flags).
+STAMP="${INSTALL}/.occt_built_${OCCT_TAG}_native_eh_v4"
+[[ -f "${STAMP}" ]] && echo "[occt] stamp exists — skip" && exit 0
+
+echo "[occt] downloading OCCT ${OCCT_VERSION}…"
+mkdir -p /tmp/occt/occt-src
+curl -fL --retry 3 \
+  "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/${OCCT_TAG}.tar.gz" \
+  | tar xz -C /tmp/occt/occt-src --strip-components=1
+
+echo "[occt] excluding ExpToCasExe host tool…"
+# ExpToCasExe is a developer-only code generator (regenerates STEP
+# EXPRESS schema sources, which OCCT already ships pre-generated).
+# Under Emscripten its versioned executable output (ExpToCasExe.js-7.8.1)
+# breaks OCCT's install rule, which looks for "ExpToCasExe.wasm".
+# We don't need it, so drop it from BUILD_TOOLKITS before configure.
+python3 - <<'PYEOF'
+import pathlib
+p = pathlib.Path('/tmp/occt/occt-src/CMakeLists.txt')
+t = p.read_text()
+anchor = 'set (BUILD_TOOLKITS ${RAW_BUILD_TOOLKITS})'
+assert anchor in t, 'OCCT BUILD_TOOLKITS anchor not found — OCCT layout changed'
+p.write_text(t.replace(anchor, anchor + '\nlist (REMOVE_ITEM BUILD_TOOLKITS ExpToCasExe)', 1))
+print('[occt-patch] excluded ExpToCasExe from BUILD_TOOLKITS')
+PYEOF
+
+echo "[occt] applying WebAssembly EH signal-conversion patch…"
+python3 patches/occt/apply-wasm-eh.py /tmp/occt/occt-src
+
+echo "[occt] configuring with Emscripten…"
+# OCCT ignores the standard BUILD_SHARED_LIBS flag — it selects the
+# library type from its own BUILD_LIBRARY_TYPE cache variable, which
+# defaults to "Shared" and then force-sets BUILD_SHARED_LIBS=ON
+# (CMakeLists.txt:55, with no platform guard).  Emscripten cannot
+# resolve transitive .so dependencies from outside its sysroot, so the
+# link of OCCT's ExpToCasExe host tool fails with
+# "libTKExpress.so: dependency not found: libTKernel.so".
+# Setting BUILD_LIBRARY_TYPE=Static makes OCCT emit .a archives, which
+# is the only flag that actually controls this.  The toolchain file is
+# used directly (not emcmake) for explicit CMAKE_SYSTEM_NAME=Emscripten,
+# and CMAKE_CROSSCOMPILING_EMULATOR=node lets cmake run any in-build
+# codegen tools via Node.
+#
+# Native WebAssembly EH and explicit C setjmp/longjmp flags are
+# needed here too — this is a separate cmake invocation with its
+# own toolchain file, not emcmake. This patch selects native EH flags
+# and disables OCCT signal conversion; C also needs wasm longjmp mode.
+cmake \
+  -S /tmp/occt/occt-src \
+  -B /tmp/occt/build \
+  -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="${EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  -DBUILD_LIBRARY_TYPE=Static \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_CROSSCOMPILING_EMULATOR="node" \
+  -DBUILD_MODULE_Draw=OFF \
+  -DBUILD_MODULE_Visualization=OFF \
+  -DBUILD_MODULE_FoundationClasses=ON \
+  -DBUILD_MODULE_ModelingData=ON \
+  -DBUILD_MODULE_ModelingAlgorithms=ON \
+  -DBUILD_MODULE_DataExchange=ON \
+  -DBUILD_MODULE_ApplicationFramework=ON \
+  -DUSE_FREETYPE=OFF \
+  -DUSE_OPENGL2=OFF \
+  -DUSE_TCL=OFF \
+  -DUSE_TK=OFF \
+  -DUSE_FFMPEG=OFF \
+  -DUSE_FREEIMAGE=OFF \
+  -DUSE_RAPIDJSON=OFF \
+  -DUSE_DRACO=OFF \
+  -DUSE_VTK=OFF \
+  -DUSE_TBB=OFF \
+  "-DCMAKE_CXX_FLAGS=-O2 -UOCC_CONVERT_SIGNALS -Wno-deprecated-anon-enum-enum-conversion -Wno-unknown-warning-option ${EXTRA_CXX_FLAGS}" \
+  "-DCMAKE_C_FLAGS=-O2 -UOCC_CONVERT_SIGNALS ${EXTRA_C_FLAGS}"
+
+echo "[occt] building (first run ~30–60 min)…"
+cmake --build /tmp/occt/build -j"$(nproc)"
+
+echo "[occt] installing to ${INSTALL}…"
+cmake --install /tmp/occt/build
+
+echo "[occt] verifying install…"
+ls "${INSTALL}/lib/cmake/opencascade/OpenCASCADEConfig.cmake" \
+  && echo "  cmake config OK"
+ls "${INSTALL}/lib/libTKernel.a" && echo "  TKernel.a OK"
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM deps — emscripten ports (zlib/png/jpeg)
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+export EM_CACHE="${EM_CACHE:-${EMSDK}/upstream/emscripten/cache}"
+echo "[emports] Emscripten cache: ${EM_CACHE}"
+python3 scripts/prepare-emscripten-eh.py --emsdk "$EMSDK"
+SYSROOT_LIB="$EM_CACHE/sysroot/lib/wasm32-emscripten"
+PORT_SUFFIX="mt-wasm-sjlj"
+echo "[emports] building native-EH pthread ports…"
+embuilder build "zlib-${PORT_SUFFIX}" "libpng-${PORT_SUFFIX}" "libjpeg-${PORT_SUFFIX}"
+cp "${SYSROOT_LIB}/libz-${PORT_SUFFIX}.a" "${SYSROOT_LIB}/libz.a"
+cp "${SYSROOT_LIB}/libpng-${PORT_SUFFIX}.a" "${SYSROOT_LIB}/libpng.a"
+cp "${SYSROOT_LIB}/libjpeg-${PORT_SUFFIX}.a" "${SYSROOT_LIB}/libjpeg.a"
+echo "[emports] sysroot libs:"
+ls "${SYSROOT_LIB}/libz.a" && echo "  libz OK"
+ls "${SYSROOT_LIB}/libpng.a" && echo "  libpng OK"
+ls "${SYSROOT_LIB}/libjpeg.a" && echo "  libjpeg OK"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build official oneTBB for WASM
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+INSTALL="$(pwd)/deps-install"
+STAMP="${INSTALL}/.onetbb_${ONETBB_VERSION}_native_eh_v1"
+[[ -f "${STAMP}" ]] && echo "[oneTBB] cached" && exit 0
+
+git clone --depth 1 --branch "${ONETBB_VERSION}" \
+  https://github.com/uxlfoundation/oneTBB.git /tmp/onetbb
+cmake -DTBB_SOURCE_DIR=/tmp/onetbb -P patches/onetbb/wasm-exceptions.cmake
+emcmake cmake -S /tmp/onetbb -B /tmp/onetbb-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL}" \
+  "-DCMAKE_C_FLAGS=${EXTRA_C_FLAGS}" \
+  "-DCMAKE_CXX_FLAGS=${EXTRA_CXX_FLAGS}" \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DTBB_TEST=OFF \
+  -DTBB_EXAMPLES=OFF \
+  -DTBB_STRICT=OFF \
+  -DTBB_DISABLE_HWLOC_AUTOMATIC_SEARCH=ON
+cmake --build /tmp/onetbb-build --target install -j"$(nproc)"
+test -f "${INSTALL}/lib/libtbb.a"
+test -f "${INSTALL}/lib/cmake/TBB/TBBConfig.cmake"
+touch "${STAMP}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Configure WASM build
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+WORK="$(pwd)"
+DEP_INSTALL="${WORK}/deps-install"
+mkdir -p build-wasm
+
+# Compile the full tree with pthreads and use real oneTBB headers.
+COMMON_SHIM_DIR="${WORK}/wasm/shims-common"
+
+emcmake cmake \
+  -S orca \
+  -B build-wasm \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="${DEP_INSTALL}" \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_MODULE_PATH="${WORK}/cmake" \
+  -DCMAKE_PROJECT_INCLUDE_BEFORE="${WORK}/cmake/wasm_find_paths.cmake" \
+  -DSLIC3R_WASM=ON \
+  -DSLIC3R_GUI=OFF \
+  -DSLIC3R_STATIC=ON \
+  -DSLIC3R_OPENCASCADE=ON \
+  -DOCCT_WASM_DIR="${DEP_INSTALL}" \
+  -DSLIC3R_OPENGL_IMGUI=OFF \
+  -DORCA_WEB_BRIDGE_DIR="${WORK}/bridge" \
+  -DORCA_WEB_WASM_DIR="${WORK}/wasm" \
+  -DORCA_WEB_OVERRIDES_DIR="${WORK}/overrides" \
+  -DBoost_NO_SYSTEM_PATHS=ON \
+  -DBoost_NO_BOOST_CMAKE=ON \
+  -DBOOST_ROOT="${DEP_INSTALL}" \
+  -DBoost_ROOT="${DEP_INSTALL}" \
+  -DCGAL_DIR="${DEP_INSTALL}/lib/cmake/CGAL" \
+  -DNLOPT_LIBRARY="${DEP_INSTALL}/lib/libnlopt.a" \
+  -DNLOPT_INCLUDE_DIR="${DEP_INSTALL}/include" \
+  "-DCMAKE_CXX_FLAGS=-I${COMMON_SHIM_DIR} -DBOOST_HAS_PTHREADS=1 -DSLIC3R_WASM=1 -DSLIC3R_NO_OPENVDB=1 -DSLIC3R_NO_OPENCV=1 ${EXTRA_CXX_FLAGS}" \
+  "-DCMAKE_C_FLAGS=-I${COMMON_SHIM_DIR} ${EXTRA_C_FLAGS}"
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Build WASM module
+# ══════════════════════════════════════════════════════════
+(
+source "$EMSDK/emsdk_env.sh"
+emmake cmake --build build-wasm --target slicer -j4
+echo "--- ccache stats ---"
+ccache -s || true
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Package WASM artifacts
+# ══════════════════════════════════════════════════════════
+(
+echo "--- build output ---"
+ls -lh build-wasm/wasm/ 2>/dev/null || ls -lh build-wasm/ || true
+echo "--- artifacts/ ---"
+ls -lh artifacts/ 2>/dev/null || true
+
+# Fallback copy if POST_BUILD didn't run.  ${OUTPUT_NAME}.data only
+# exists when a --preload-file bundle is used; the v2.4.2 engine
+# has none, so it is copied only if present.
+BUILDDIR="build-wasm/wasm"
+if [[ ! -f "artifacts/${OUTPUT_NAME}.js" ]] && [[ -f "${BUILDDIR}/${OUTPUT_NAME}.js" ]]; then
+  mkdir -p artifacts
+  cp "${BUILDDIR}/${OUTPUT_NAME}.js"   "artifacts/${OUTPUT_NAME}.js"
+  cp "${BUILDDIR}/${OUTPUT_NAME}.wasm" "artifacts/${OUTPUT_NAME}.wasm"
+  [[ -f "${BUILDDIR}/${OUTPUT_NAME}.data" ]] && cp "${BUILDDIR}/${OUTPUT_NAME}.data" "artifacts/${OUTPUT_NAME}.data"
+fi
+
+mkdir -p wasm-artifacts
+cp "artifacts/${OUTPUT_NAME}.js"   wasm-artifacts/
+cp "artifacts/${OUTPUT_NAME}.wasm" wasm-artifacts/
+[[ -f "artifacts/${OUTPUT_NAME}.data" ]] && cp "artifacts/${OUTPUT_NAME}.data" wasm-artifacts/
+ls -lh wasm-artifacts/
+
+)
+
+# ══════════════════════════════════════════════════════════
+# Smoke test WASM module
+# ══════════════════════════════════════════════════════════
+(
+node scripts/smoke-test.mjs --wasm-dir artifacts
+)

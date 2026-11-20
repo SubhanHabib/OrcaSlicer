@@ -1,4 +1,6 @@
 #include "PerimeterGenerator.hpp"
+#include <sstream>
+#include "AABBTreeLines.hpp"
 #include "Arachne/utils/ExtrusionLine.hpp"
 #include "Arachne/utils/ExtrusionJunction.hpp"
 #include "BridgeDetector.hpp"

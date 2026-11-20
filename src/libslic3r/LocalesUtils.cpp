@@ -9,6 +9,7 @@
 #include <charconv>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
 
 #include <fast_float/fast_float.h>

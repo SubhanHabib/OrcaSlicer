@@ -1,4 +1,5 @@
 #include "CutSurface.hpp"
+#include <sstream>
 #include "libslic3r/Emboss.hpp"
 #include <vector>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>

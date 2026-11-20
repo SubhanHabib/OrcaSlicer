@@ -4,6 +4,7 @@
 #include <exception>
 #include <boost/algorithm/string/predicate.hpp>
 #include <limits>
+#include <sstream>
 #include <miniz.h>
 #include <string.h>
 #include <map>

@@ -1,4 +1,5 @@
 #include "ArcFitter.hpp"
+#include <sstream>
 #include "Point.hpp"
 #include "Circle.hpp"
 #include "MultiPoint.hpp"

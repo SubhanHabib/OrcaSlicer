@@ -2355,7 +2355,8 @@ bool append_printer_bed_assets(mz_zip_archive &zip, const DynamicPrintConfig &co
 PresetsConfigSubstitutions PresetBundle::import_presets(std::vector<std::string> &              files,
                                                         std::function<int(std::string const &)> override_confirm,
                                                         ForwardCompatibilitySubstitutionRule    rule,
-                                                        AppConfig&                            config)
+                                                        AppConfig&                            config,
+                                                        bool                                    ignore_bundle_structure)
 {
     bundles.PauseRead(); // Pause threads from reading
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " entry";
@@ -2414,7 +2415,7 @@ PresetsConfigSubstitutions PresetBundle::import_presets(std::vector<std::string>
             BundleMetadata metadata;
             fs::path metadata_path = temp_folder / BUNDLE_STRUCTURE_JSON_NAME;
             status = mz_zip_reader_extract_file_to_file(&zip_archive, BUNDLE_STRUCTURE_JSON_NAME, encode_path(metadata_path.string().c_str()).c_str(), MZ_ZIP_FLAG_CASE_SENSITIVE);
-            if (status) {
+            if (status && ! ignore_bundle_structure) {
                 if (metadata.load_from_json(metadata_path.string())) {
                     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Found bundle_id: " << metadata.id << " from " << BUNDLE_STRUCTURE_JSON_NAME;
                     has_bundle_structure = true;

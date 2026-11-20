@@ -1,4 +1,5 @@
 #include "SVG.hpp"
+#include <sstream>
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/exception.hpp>

@@ -625,7 +625,9 @@ cmake_policy(SET CMP0011 NEW)
 # can't reach it; the default opts its Boost lookup into BoostConfig (CMP0167).
 set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
 find_package(CGAL 6.2 REQUIRED)
-find_package(OpenCV REQUIRED core)
+# The modules the sources include. A deps build ships them all in opencv_world and
+# OpenCV_LIBS resolves to it; a system OpenCV has one library per module.
+find_package(OpenCV REQUIRED core imgproc imgcodecs)
 find_package(assimp REQUIRED)
 unset(CMAKE_POLICY_DEFAULT_CMP0167)
 cmake_policy(POP)
@@ -687,8 +689,18 @@ if (WIN32)
     target_compile_definitions(libslic3r PUBLIC XML_STATIC)
 endif()
 
-# Find the OCCT and related libraries
-set(OpenCASCADE_DIR "${CMAKE_PREFIX_PATH}/lib/cmake/occt")
+# The deps build of OpenCV ships one static libopencv_world; find_package
+# returns it in OpenCV_LIBS but does not attach opencv4's include directory
+# through an INTERFACE property, so add it here explicitly.
+target_include_directories(libslic3r SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+
+# Find the OCCT and related libraries. The deps prefix is the first entry of
+# CMAKE_PREFIX_PATH, which can hold more: the NDK's toolchain file appends its own.
+set(_deps_prefix "${CMAKE_PREFIX_PATH}")
+if (CMAKE_PREFIX_PATH)
+    list(GET CMAKE_PREFIX_PATH 0 _deps_prefix)
+endif ()
+set(OpenCASCADE_DIR "${_deps_prefix}/lib/cmake/occt")
 find_package(OpenCASCADE REQUIRED)
 target_include_directories(libslic3r SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 
@@ -768,7 +780,7 @@ target_link_libraries(libslic3r
         libigl
         libnest2d
         miniz
-        opencv_world
+        ${OpenCV_LIBS}
         assimp::assimp
     PRIVATE
         ${CMAKE_DL_LIBS}
@@ -792,6 +804,21 @@ target_link_libraries(libslic3r
         ZLIB::ZLIB
         OpenSSL::Crypto
     )
+
+if(ORCA_MOBILE)
+    # OCCT's static targets name FreeType as a bare "freetype", which the macOS linker cannot
+    # find; this target maps that name to FREETYPE_LIBRARIES.
+    if (NOT TARGET freetype)
+        add_library(freetype INTERFACE IMPORTED GLOBAL)
+        target_link_libraries(freetype INTERFACE ${FREETYPE_LIBRARIES})
+    endif ()
+    # Link freetype for OCCT dependency (CAD operations need font rendering)
+    target_link_libraries(libslic3r PRIVATE ${FREETYPE_LIBRARIES})
+    # Android has no fontconfig; OCCT's font manager scans the system font directories itself.
+    if (NOT APPLE AND NOT ANDROID)
+        target_link_libraries(libslic3r PRIVATE fontconfig)
+    endif()
+endif()
 
 if (APPLE)
     find_library(FOUNDATION Foundation REQUIRED)

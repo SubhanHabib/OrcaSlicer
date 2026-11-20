@@ -2,6 +2,7 @@
 #include <boost/date_time/posix_time/posix_time_types.hpp>
 #include <cassert>
 #include <chrono>
+#include <sstream>
 #include <cstddef>
 #include <cstdint>
 #include <limits>

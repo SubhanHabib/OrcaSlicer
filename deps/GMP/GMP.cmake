@@ -22,8 +22,39 @@ if (MSVC)
 else ()
     set(_gmp_ccflags "-O2 -DNDEBUG -fPIC -DPIC -Wall -Wmissing-prototypes -Wpointer-arith -pedantic -fomit-frame-pointer -fno-common")
     set(_gmp_build_tgt "${CMAKE_SYSTEM_PROCESSOR}")
+    # The compilers and binutils the configure scripts of GMP and MPFR see. The
+    # superbuild's compiler serves everywhere but Android, where the per-API wrapper
+    # carries the target and the LLVM tools have to be named (deps-android.cmake).
+    set(_gmp_cc "${CMAKE_C_COMPILER}")
+    set(_gmp_cxx "${CMAKE_CXX_COMPILER}")
+    set(_gmp_tool_env "")
 
-    if (APPLE)
+    if (DEPS_ANDROID)
+        # Cross build with the NDK. --host comes from TOOLCHAIN_PREFIX below; GMP's
+        # assembly is not written for Android. config.guess names the build machine,
+        # which never matches an Android triple, so configure takes cross mode.
+        set(_gmp_cc "${DEPS_ANDROID_CC}")
+        set(_gmp_cxx "${DEPS_ANDROID_CXX}")
+        set(_gmp_tool_env ${DEPS_ANDROID_TOOL_ENV})
+        set(_gmp_build_tgt --disable-assembly)
+    elseif (DEPS_IOS)
+        # Cross build from the Mac host. --host comes from TOOLCHAIN_PREFIX below; the
+        # SDK, architecture and minimum version travel in the compiler flags. GMP's
+        # arm64 assembly is written for macOS and is skipped on iOS.
+        #
+        # autoconf only takes cross-compiling mode when the --build and --host triples
+        # differ as written; an arm64 Mac building for an arm64 device would otherwise
+        # get the same triple for both and configure would try to run an iOS binary.
+        # The host kernel version keeps them apart.
+        set(_gmp_ccflags "${_gmp_ccflags} ${DEPS_IOS_TARGET_FLAGS}")
+        if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm")
+            set(_gmp_build_arch aarch64)
+        else ()
+            set(_gmp_build_arch ${CMAKE_HOST_SYSTEM_PROCESSOR})
+        endif ()
+        string(REGEX MATCH "^[0-9]+" _gmp_build_darwin "${CMAKE_HOST_SYSTEM_VERSION}")
+        set(_gmp_build_tgt "--build=${_gmp_build_arch}-apple-darwin${_gmp_build_darwin}" --disable-assembly)
+    elseif (APPLE)
         if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
             set(_gmp_build_arch aarch64)
         else ()
@@ -69,7 +100,7 @@ else ()
         DOWNLOAD_DIR ${DEP_DOWNLOAD_DIR}/GMP
         PATCH_COMMAND git apply ${GMP_DIRECTORY_FLAG} --verbose ${CMAKE_CURRENT_LIST_DIR}/0001-GMP_GCC15.patch
         BUILD_IN_SOURCE ON
-        CONFIGURE_COMMAND  env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${_gmp_ccflags}" "CXXFLAGS=${_gmp_ccflags}" "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}" ./configure ${_cross_compile_arg} --enable-shared=no --enable-cxx=yes --enable-static=yes "--prefix=${DESTDIR}" ${_gmp_build_tgt}
+        CONFIGURE_COMMAND  env "CC=${_gmp_cc}" "CXX=${_gmp_cxx}" ${_gmp_tool_env} "CFLAGS=${_gmp_ccflags}" "CXXFLAGS=${_gmp_ccflags}" "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}" ./configure ${_cross_compile_arg} --enable-shared=no --enable-cxx=yes --enable-static=yes "--prefix=${DESTDIR}" ${_gmp_build_tgt}
         BUILD_COMMAND     make -j
         INSTALL_COMMAND   make install
     )
