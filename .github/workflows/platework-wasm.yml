@@ -16,27 +16,37 @@ jobs:
           node-version: 26
       - name: Install build tools
         run: sudo apt-get update -qq && sudo apt-get install -y ccache ninja-build texinfo m4
-      - uses: actions/cache/restore@v4
-        id: deps
-        with:
-          path: |
-            ports/wasm/deps-install
-            ~/.cache/ccache
-          key: wasm-deps-${{ runner.os }}-${{ hashFiles('ports/wasm/scripts/build-local-wsl.sh', 'ports/wasm/scripts/build-image-deps.sh', 'ports/wasm/patches/**') }}
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk /opt/emsdk
           /opt/emsdk/emsdk install 3.1.74
           /opt/emsdk/emsdk activate 3.1.74
-      - name: Build third-party libraries
-        run: ports/wasm/scripts/build-local-wsl.sh --deps
-      - uses: actions/cache/save@v4
-        if: steps.deps.outputs.cache-hit != 'true'
+      - name: Identify the base library recipes
+        id: base
+        run: |
+          digest=$(sed '/^if .*== --base-deps /,$d' ports/wasm/scripts/build-local-wsl.sh | sha256sum | cut -d' ' -f1)
+          echo "key=wasm-base-3.1.74-$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: restored
         with:
           path: |
             ports/wasm/deps-install
-            ~/.cache/ccache
-          key: ${{ steps.deps.outputs.cache-primary-key }}
+            ports/wasm/build-wasm/emscripten-cache-mt
+          key: ${{ steps.base.outputs.key }}
+      - name: Build base libraries
+        run: ports/wasm/scripts/build-local-wsl.sh --base-deps
+      - uses: actions/cache/save@v4
+        if: steps.restored.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ports/wasm/deps-install
+            ports/wasm/build-wasm/emscripten-cache-mt
+          key: ${{ steps.base.outputs.key }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: wasm-object-${{ github.sha }}
+          restore-keys: wasm-object-
       - name: Build and exercise the browser binding
         run: ports/wasm/scripts/build-local-wsl.sh
       - name: Test the browser API contract

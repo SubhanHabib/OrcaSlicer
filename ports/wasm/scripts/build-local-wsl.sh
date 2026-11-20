@@ -465,6 +465,7 @@ touch "${STAMP}"
 )
 
 # ══════════════════════════════════════════════════════════
+if [[ ${1:-} == --base-deps ]]; then exit 0; fi
 # Build the texture import library used by Orca 2.5.
 (
 install_prefix="$(pwd)/deps-install"
@@ -478,7 +479,7 @@ if [[ ! -f "$install_prefix/.assimp-5.4.3" ]]; then
         -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF -DASSIMP_NO_EXPORT=ON \
         -DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF -DASSIMP_BUILD_OBJ_IMPORTER=ON \
         -DASSIMP_BUILD_GLTF_IMPORTER=ON -DASSIMP_BUILD_FBX_IMPORTER=ON \
-        -DASSIMP_BUILD_ZLIB=OFF -DASSIMP_WARNINGS_AS_ERRORS=OFF
+        -DASSIMP_BUILD_ZLIB=ON -DASSIMP_WARNINGS_AS_ERRORS=OFF
     cmake --build /tmp/assimp-wasm-build --target install --parallel 4
     touch "$install_prefix/.assimp-5.4.3"
 fi
