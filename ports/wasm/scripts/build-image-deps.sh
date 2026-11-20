@@ -29,7 +29,7 @@ if [[ ! -f "$install_dir/.draco-1.5.7" ]]; then
     [[ -f "$archive" ]] || curl -fsSL --retry 3 https://github.com/google/draco/archive/refs/tags/1.5.7.zip -o "$archive"
     echo "27b72ba2d5ff3d0a9814ad40d4cb88f8dc89a35491c0866d952473f8f9416b77  $archive" | shasum -a 256 -c -
     unzip -qo "$archive" -d "$sources"
-    emcmake cmake -S "$sources/draco-1.5.7" -B "$sources/draco-build" "${common[@]}" \
+    EMSCRIPTEN="$(dirname "$(command -v emcc)")" emcmake cmake -S "$sources/draco-1.5.7" -B "$sources/draco-build" "${common[@]}" \
         -DDRACO_JS_GLUE=OFF -DDRACO_TESTS=OFF
     cmake --build "$sources/draco-build" --target install -j "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
     touch "$install_dir/.draco-1.5.7"
